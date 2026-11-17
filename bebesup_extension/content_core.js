@@ -48,7 +48,7 @@
                 ${isAutoLooping ? "자동 진행 중" : "베베숲 AI"}
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.7.0 (선별엔진 강화)
+                v2.7.2 (선택엔진 안정화 & 체크박스 보호)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -147,7 +147,8 @@
             // 1. ag-grid 탐색
             const agRows = Array.from(doc.querySelectorAll(".ag-center-cols-container .ag-row, .ag-row:not(.ag-header-row)"));
             if (agRows.length > 0) {
-                return { doc, type: "AG_GRID", rows: agRows };
+                const gridTable = doc.querySelector(".ag-root-wrapper, .ag-root, [role='grid'], .ag-theme-balham");
+                return { doc, type: "AG_GRID", table: gridTable, rows: agRows };
             }
 
             // 2. 스마트스토어 리뷰 전용 HTML Table 탐색
@@ -1080,14 +1081,23 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         return null;
     }
 
-    // 네이버 '이미 답글을 작성한 리뷰' 경고 팝업 탐색 및 자동 확인/닫기 (어떤 프레임/형태든 100% 감지)
-    function dismissAlreadyAnsweredPopup() {
+    // 네이버 시스템 경고 팝업 탐색 및 자동 확인/닫기 ('이미 작성된 건' & '리뷰 미선택' 등)
+    function dismissSystemAlertPopup() {
         for (const d of getAllDocs()) {
             const allElements = Array.from(d.querySelectorAll("div, [role='dialog'], [role='alertdialog'], section, article, p, span"));
+            let alertType = null;
             const targetEl = allElements.find(el => {
                 if (el.closest && el.closest("#bebesup-helper-panel")) return false;
                 const txt = (el.innerText || el.textContent || "").replace(/\s+/g, "");
-                return txt.includes("이미답글을작성한리뷰") || txt.includes("추가로답글을달수없습니다") || txt.includes("다른리뷰를선택해주세요");
+                if (txt.includes("이미답글을작성한리뷰") || txt.includes("추가로답글을달수없습니다") || txt.includes("다른리뷰를선택해주세요")) {
+                    alertType = "ALREADY_ANSWERED";
+                    return true;
+                }
+                if (txt.includes("리뷰를선택해주세요") || txt.includes("선택된리뷰가없습니다") || txt.includes("리뷰를선택해") || txt.includes("대상을선택해")) {
+                    alertType = "NO_SELECTION";
+                    return true;
+                }
+                return false;
             });
 
             if (targetEl) {
@@ -1114,11 +1124,13 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     bg.style.display = "none";
                     bg.remove();
                 }
-                return true;
+                return alertType;
             }
         }
-        return false;
+        return null;
     }
+
+    const dismissAlreadyAnsweredPopup = dismissSystemAlertPopup;
 
     // 상단 검색조건에서 [답글여부: 미등록]이 체크되어 있는지 확인하고 강제 체크
     function ensureUnansweredFilterSelected() {
@@ -1127,13 +1139,17 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             const labels = Array.from(d.querySelectorAll("label"));
             const unregLabel = labels.find(l => {
                 if (l.closest && l.closest("#bebesup-helper-panel")) return false;
+                // 반드시 '답글' 또는 '답변' 관련 영역 내의 미등록 라벨만 한정
+                const parentRow = l.closest("tr, .form-group, dl, div[class*='row'], div[class*='search']");
+                const rowText = parentRow ? (parentRow.innerText || "") : "";
+                if (!rowText.includes("답글") && !rowText.includes("답변")) return false;
+
                 const txt = (l.innerText || l.textContent || "").trim().replace(/\s+/g, "");
                 return txt === "미등록" || txt === "답글미등록" || txt === "답변미등록";
             });
             if (unregLabel) {
                 const input = unregLabel.querySelector("input") || d.getElementById(unregLabel.getAttribute("for"));
                 if (input && !input.checked) {
-                    unregLabel.click();
                     input.checked = true;
                     input.dispatchEvent(new Event('change', { bubbles: true }));
                     changed = true;
@@ -1143,6 +1159,10 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             const selects = Array.from(d.querySelectorAll("select"));
             for (const sel of selects) {
                 if (sel.closest && sel.closest("#bebesup-helper-panel")) continue;
+                const parentRow = sel.closest("tr, .form-group, dl, div[class*='row'], div[class*='search']");
+                const rowText = parentRow ? (parentRow.innerText || "") : "";
+                if (!rowText.includes("답글") && !rowText.includes("답변")) continue;
+
                 const opt = Array.from(sel.options).find(o => (o.text || "").includes("미등록"));
                 if (opt && sel.value !== opt.value) {
                     sel.value = opt.value;
@@ -1154,21 +1174,69 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         return changed;
     }
 
-    // 화면상의 모든 선택 체크박스 초기화
+    // 🛡️ 화면상의 리뷰 목록 선택 체크박스만 안전 초기화
+    // (상단 검색조건 '구매자평점', '혜택지급', '전시상태' 등은 100% 절대 불변 보호)
     function clearAllSelections(api, reviewInfo) {
-        if (api) {
+        if (api && typeof api.deselectAll === "function") {
             try { api.deselectAll(); } catch(e) {}
         }
         for (const d of getAllDocs()) {
             try {
-                const checkboxes = Array.from(d.querySelectorAll("input[type='checkbox']:checked"));
-                for (const chk of checkboxes) {
-                    if (chk.closest && chk.closest("#bebesup-helper-panel")) continue;
+                // 🛡️ 오직 ag-grid 행 또는 리뷰 테이블 tbody 내부의 체크박스만 선별 수집
+                const targetCheckboxes = Array.from(d.querySelectorAll(
+                    ".ag-body-viewport input[type='checkbox']:checked, " +
+                    ".ag-pinned-left-cols-container input[type='checkbox']:checked, " +
+                    ".ag-center-cols-container input[type='checkbox']:checked, " +
+                    ".ag-row input[type='checkbox']:checked"
+                ));
+
+                if (reviewInfo && reviewInfo.table) {
+                    const tbodyChks = Array.from(reviewInfo.table.querySelectorAll("tbody input[type='checkbox']:checked"));
+                    targetCheckboxes.push(...tbodyChks);
+                }
+
+                for (const chk of targetCheckboxes) {
+                    // 🚨 2중 절대 보호: 상단 검색창, 검색조건 폼, 테이블 헤더는 절대 건드리지 않음
+                    if (chk.closest("#bebesup-helper-panel, form, .search-area, .condition, .panel-search, .n-search-box, thead, .ag-header")) continue;
                     chk.click();
                     chk.checked = false;
                     chk.dispatchEvent(new Event('change', { bubbles: true }));
                 }
             } catch(e) {}
+        }
+    }
+
+    // ag-Grid DOM 행 체크박스 실시간 동기화 클릭 함수
+    function selectAgGridDomRowCheckbox(doc, node) {
+        if (!doc || !node) return;
+        const selectors = [
+            `.ag-pinned-left-cols-container .ag-row[row-id="${node.id}"]`,
+            `.ag-pinned-left-cols-container .ag-row[row-index="${node.rowIndex}"]`,
+            `.ag-center-cols-container .ag-row[row-id="${node.id}"]`,
+            `.ag-center-cols-container .ag-row[row-index="${node.rowIndex}"]`,
+            `.ag-row[row-id="${node.id}"]`,
+            `.ag-row[row-index="${node.rowIndex}"]`
+        ];
+
+        for (const sel of selectors) {
+            const rowEl = doc.querySelector(sel);
+            if (!rowEl) continue;
+            const chk = rowEl.querySelector("input[type='checkbox'], .ag-selection-checkbox, div[class*='ag-checkbox'], [role='checkbox'], span[class*='ag-icon-checkbox']");
+            if (chk) {
+                if (chk.tagName === "INPUT") {
+                    if (!chk.checked) {
+                        chk.click();
+                        if (!chk.checked) chk.checked = true;
+                        chk.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                } else {
+                    const isChecked = chk.classList.contains("ag-checked") || chk.querySelector(".ag-icon-checkbox-checked");
+                    if (!isChecked) {
+                        chk.click();
+                    }
+                }
+                break;
+            }
         }
     }
 
@@ -1346,6 +1414,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
                 // 선별 통과!
                 node.setSelected(true, false);
+                selectAgGridDomRowCheckbox(reviewInfo.doc || document, node);
                 if (sig) currentBatchSigs.push(sig);
                 selectedCount++;
             });
@@ -1451,12 +1520,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 if (chk) {
                     if (chk.tagName === "INPUT") {
                         if (!chk.checked) {
-                            const parentLabel = chk.closest("label") || chk.parentElement;
-                            if (parentLabel && parentLabel.tagName === "LABEL") {
-                                parentLabel.click();
-                            } else {
-                                chk.click();
-                            }
+                            chk.click();
                             if (!chk.checked) chk.checked = true;
                             chk.dispatchEvent(new Event('input', { bubbles: true }));
                             chk.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1477,6 +1541,21 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             return { status: "EMPTY", skippedAnswered, skippedBad, skippedCategory };
         }
 
+        // AngularJS scope 동기화 (선택 변경을 네이버 컨트롤러에 즉시 전파)
+        try {
+            const win = (reviewInfo.doc || document).defaultView || window;
+            if (win.angular) {
+                const rootEl = (reviewInfo.doc || document).querySelector(".ag-root-wrapper, .ag-root, [role='grid'], table, #content");
+                if (rootEl) {
+                    const scope = win.angular.element(rootEl).scope();
+                    if (scope && !scope.$$phase) scope.$apply();
+                }
+            }
+        } catch(e) {}
+
+        // 브라우저 DOM 렌더링 및 체크박스 이벤트 루프 처리 대기 (인식 실패 100% 방지)
+        await sleep(400);
+
         runBtn.innerText = `⏳ [${catLabel}] ${selectedCount}개 작성 중...`;
 
         // 1. 답글작성 버튼 탐색 (테이블 인근 툴바 및 전역/iframe)
@@ -1493,12 +1572,16 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             const fillInterval = setInterval(async () => {
                 checkAttempts++;
 
-                // 스마트스토어의 '이미 답글을 작성한 리뷰' 팝업 감지 시 자동 닫기 및 재갱신
-                if (dismissAlreadyAnsweredPopup()) {
+                // 스마트스토어의 시스템 경고 팝업 감지 시 자동 닫기 및 처리
+                const alertType = dismissSystemAlertPopup();
+                if (alertType === "ALREADY_ANSWERED") {
                     clearInterval(fillInterval);
                     clearAllSelections(api, reviewInfo);
                     for (const s of currentBatchSigs) { if (s) processedSignatures.add(s); }
                     return resolve({ status: "ALREADY_ANSWERED_WARN" });
+                } else if (alertType === "NO_SELECTION") {
+                    clearInterval(fillInterval);
+                    return resolve({ status: "NO_SELECTION_ALERT" });
                 }
 
                 const modalInfo = findReplyModalInfo(reviewInfo.doc);
@@ -1664,6 +1747,12 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 runBtn.innerText = "▶ 자동 실행 시작";
                 alert("⚠️ 화면에서 [답글작성] 버튼을 찾지 못했습니다.\n리뷰 관리 화면인지 확인해 주세요.");
                 return;
+            } else if (result.status === "NO_SELECTION_ALERT") {
+                runBtn.innerText = "⚠️ 선택 동기화 대기 중...";
+                clearAllSelections(api, reviewInfo);
+                await sleep(1000);
+                await refreshReviewList(reviewInfo.doc);
+                await sleep(1500);
             } else if (result.status === "TIMEOUT") {
                 runBtn.innerText = "⚠️ 창 지연 감지, 재시도 중...";
                 await sleep(1500);
@@ -1738,6 +1827,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     await sleep(500);
                     const ok = await refreshReviewList();
                     if (!ok) location.reload();
+                } else if (result.status === "NO_SELECTION_ALERT") {
+                    alert("⚠️ 스마트스토어에서 선택된 리뷰를 인식하지 못했습니다.\n체크박스를 수동으로 1개 선택해 보신 뒤 다시 시도해 주세요.");
                 } else if (result.status === "EMPTY") {
                     alert("ℹ️ 현재 화면에 답글 대상 칭찬 리뷰가 없습니다.\n상단에서 기간 선택 후 [검색]을 먼저 진행해 주세요!");
                 } else if (result.status === "NO_BUTTON") {
@@ -1754,6 +1845,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 runBtn.innerText = "▶ 자동 실행 시작";
                 if (res.status === "TEST_DONE") {
                     alert(`✅ [눈으로 확인 완료]\n\n총 ${res.count}개의 미답변 칭찬 리뷰가 선택되었고, 하단 [답글 내용] 칸에 베베숲 공식 문구가 자동 입력되었습니다!\n\n💡 [등록 및 새로고침]까지 실제로 동작하는지 테스트하시려면, 상단 모드를 [⚡ 1회 5개만 등록]으로 변경 후 실행해 보세요😊`);
+                } else if (res.status === "NO_SELECTION_ALERT") {
+                    alert("⚠️ 스마트스토어에서 선택된 리뷰를 인식하지 못했습니다.\n체크박스를 수동으로 1개 선택해 보신 뒤 다시 시도해 주세요.");
                 } else if (res.status === "EMPTY") {
                     if (res.skippedAnswered > 0) {
                         alert(`ℹ️ 현재 화면의 리뷰(${res.skippedAnswered}건)는 모두 이미 답글이 작성된 건입니다.\n\n상단 검색 조건에서 [답글여부: 미등록]으로 변경 후 [검색]을 진행해 주세요.`);
