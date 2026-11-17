@@ -48,7 +48,7 @@
                 ${isAutoLooping ? "자동 진행 중" : "베베숲 AI"}
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.7.2 (선택엔진 안정화 & 체크박스 보호)
+                v2.8.0 (답글엔진 전면복원 & 안정화)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -273,30 +273,30 @@
             if (!doc) continue;
 
             // 1. "판매자 일괄 답글 작성" 모달 컨테이너 탐색
-            const modals = Array.from(doc.querySelectorAll(".modal-content, div.modal, [role='dialog'], .n-layer-popup, div[class*='layer_popup'], div[class*='modal'], div[class*='popup']"));
+            const modals = Array.from(doc.querySelectorAll(".modal-content, div.modal, [role='dialog'], .n-layer-popup, div[class*='layer_popup'], div[class*='modal'], div[class*='popup'], div[class*='layer']"));
             const targetModal = modals.find(m => {
                 const txt = (m.innerText || "").replace(/\s+/g, "");
-                return txt.includes("일괄답글") || txt.includes("답글작성") || txt.includes("답글내용");
+                return txt.includes("일괄답글") || txt.includes("답글작성") || txt.includes("답글내용") || txt.includes("답글") || txt.includes("답변");
             }) || modals[0];
 
             if (targetModal) {
                 const tas = Array.from(targetModal.querySelectorAll("textarea, [contenteditable='true']")).filter(t => !t.closest("#bebesup-helper-panel"));
-                
-                // 모달 내 반드시 2개의 textarea가 존재함:
-                // tas[0] -> 1행: [리뷰 글번호] (절대 건드리면 안 됨!)
-                // tas[1] -> 2행: [답글 내용]   (여기에만 공식 답글 주입!)
                 if (tas.length >= 2) {
                     const replyBox = tas[1] || tas[tas.length - 1];
                     return { modal: targetModal, textarea: replyBox, doc };
+                } else if (tas.length === 1) {
+                    return { modal: targetModal, textarea: tas[0], doc };
                 }
-                // 아직 2번째 textarea가 DOM에 생성되지 않았다면 렌더링 완료까지 대기 (1번째 창 반환 금지)
-                return null;
             }
 
-            // 2. 모달 밖 전역 탐색 시에도 2개 이상의 textarea가 잡힐 때만 2번째 것을 답글창으로 지정
+            // 2. 모달 밖 전역 탐색
             const allTas = Array.from(doc.querySelectorAll("textarea, [contenteditable='true']")).filter(t => !t.closest("#bebesup-helper-panel"));
             if (allTas.length >= 2) {
                 const replyBox = allTas[1] || allTas[allTas.length - 1];
+                const modal = replyBox.closest(".modal-content, div.modal, [role='dialog'], .n-layer-popup, div[class*='layer_popup'], div[class*='modal'], div[class*='popup']") || replyBox.parentElement;
+                return { modal, textarea: replyBox, doc };
+            } else if (allTas.length === 1) {
+                const replyBox = allTas[0];
                 const modal = replyBox.closest(".modal-content, div.modal, [role='dialog'], .n-layer-popup, div[class*='layer_popup'], div[class*='modal'], div[class*='popup']") || replyBox.parentElement;
                 return { modal, textarea: replyBox, doc };
             }
@@ -1081,166 +1081,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         return null;
     }
 
-    // 네이버 시스템 경고 팝업 탐색 및 자동 확인/닫기 ('이미 작성된 건' & '리뷰 미선택' 등)
-    function dismissSystemAlertPopup() {
-        for (const d of getAllDocs()) {
-            const allElements = Array.from(d.querySelectorAll("div, [role='dialog'], [role='alertdialog'], section, article, p, span"));
-            let alertType = null;
-            const targetEl = allElements.find(el => {
-                if (el.closest && el.closest("#bebesup-helper-panel")) return false;
-                const txt = (el.innerText || el.textContent || "").replace(/\s+/g, "");
-                if (txt.includes("이미답글을작성한리뷰") || txt.includes("추가로답글을달수없습니다") || txt.includes("다른리뷰를선택해주세요")) {
-                    alertType = "ALREADY_ANSWERED";
-                    return true;
-                }
-                if (txt.includes("리뷰를선택해주세요") || txt.includes("선택된리뷰가없습니다") || txt.includes("리뷰를선택해") || txt.includes("대상을선택해")) {
-                    alertType = "NO_SELECTION";
-                    return true;
-                }
-                return false;
-            });
-
-            if (targetEl) {
-                const modal = targetEl.closest(".modal, .modal-dialog, [role='dialog'], [role='alertdialog'], div[class*='layer'], div[class*='popup'], div[class*='modal'], div[class*='alert']") || targetEl.parentElement?.parentElement || targetEl.parentElement;
-                const buttons = Array.from((modal || d).querySelectorAll("button, a, input[type='button'], .btn"));
-                const okBtn = buttons.find(b => {
-                    if (b.closest && b.closest("#bebesup-helper-panel")) return false;
-                    const bTxt = (b.innerText || b.value || b.textContent || "").trim().replace(/\s+/g, "");
-                    return bTxt === "확인" || bTxt === "닫기" || b.classList.contains("close") || b.getAttribute("aria-label") === "Close";
-                });
-
-                if (okBtn) {
-                    okBtn.focus();
-                    okBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-                    okBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-                    okBtn.click();
-                } else if (modal && modal !== d.body) {
-                    modal.style.display = "none";
-                }
-
-                // 배경 딤(backdrop) 제거
-                const backdrops = Array.from(d.querySelectorAll(".modal-backdrop, .dimmed, div[class*='backdrop'], div[class*='overlay']"));
-                for (const bg of backdrops) {
-                    bg.style.display = "none";
-                    bg.remove();
-                }
-                return alertType;
-            }
-        }
-        return null;
-    }
-
-    const dismissAlreadyAnsweredPopup = dismissSystemAlertPopup;
-
-    // 상단 검색조건에서 [답글여부: 미등록]이 체크되어 있는지 확인하고 강제 체크
-    function ensureUnansweredFilterSelected() {
-        let changed = false;
-        for (const d of getAllDocs()) {
-            const labels = Array.from(d.querySelectorAll("label"));
-            const unregLabel = labels.find(l => {
-                if (l.closest && l.closest("#bebesup-helper-panel")) return false;
-                // 반드시 '답글' 또는 '답변' 관련 영역 내의 미등록 라벨만 한정
-                const parentRow = l.closest("tr, .form-group, dl, div[class*='row'], div[class*='search']");
-                const rowText = parentRow ? (parentRow.innerText || "") : "";
-                if (!rowText.includes("답글") && !rowText.includes("답변")) return false;
-
-                const txt = (l.innerText || l.textContent || "").trim().replace(/\s+/g, "");
-                return txt === "미등록" || txt === "답글미등록" || txt === "답변미등록";
-            });
-            if (unregLabel) {
-                const input = unregLabel.querySelector("input") || d.getElementById(unregLabel.getAttribute("for"));
-                if (input && !input.checked) {
-                    input.checked = true;
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                    changed = true;
-                }
-            }
-
-            const selects = Array.from(d.querySelectorAll("select"));
-            for (const sel of selects) {
-                if (sel.closest && sel.closest("#bebesup-helper-panel")) continue;
-                const parentRow = sel.closest("tr, .form-group, dl, div[class*='row'], div[class*='search']");
-                const rowText = parentRow ? (parentRow.innerText || "") : "";
-                if (!rowText.includes("답글") && !rowText.includes("답변")) continue;
-
-                const opt = Array.from(sel.options).find(o => (o.text || "").includes("미등록"));
-                if (opt && sel.value !== opt.value) {
-                    sel.value = opt.value;
-                    sel.dispatchEvent(new Event('change', { bubbles: true }));
-                    changed = true;
-                }
-            }
-        }
-        return changed;
-    }
-
-    // 🛡️ 화면상의 리뷰 목록 선택 체크박스만 안전 초기화
-    // (상단 검색조건 '구매자평점', '혜택지급', '전시상태' 등은 100% 절대 불변 보호)
-    function clearAllSelections(api, reviewInfo) {
-        if (api && typeof api.deselectAll === "function") {
-            try { api.deselectAll(); } catch(e) {}
-        }
-        for (const d of getAllDocs()) {
-            try {
-                // 🛡️ 오직 ag-grid 행 또는 리뷰 테이블 tbody 내부의 체크박스만 선별 수집
-                const targetCheckboxes = Array.from(d.querySelectorAll(
-                    ".ag-body-viewport input[type='checkbox']:checked, " +
-                    ".ag-pinned-left-cols-container input[type='checkbox']:checked, " +
-                    ".ag-center-cols-container input[type='checkbox']:checked, " +
-                    ".ag-row input[type='checkbox']:checked"
-                ));
-
-                if (reviewInfo && reviewInfo.table) {
-                    const tbodyChks = Array.from(reviewInfo.table.querySelectorAll("tbody input[type='checkbox']:checked"));
-                    targetCheckboxes.push(...tbodyChks);
-                }
-
-                for (const chk of targetCheckboxes) {
-                    // 🚨 2중 절대 보호: 상단 검색창, 검색조건 폼, 테이블 헤더는 절대 건드리지 않음
-                    if (chk.closest("#bebesup-helper-panel, form, .search-area, .condition, .panel-search, .n-search-box, thead, .ag-header")) continue;
-                    chk.click();
-                    chk.checked = false;
-                    chk.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-            } catch(e) {}
-        }
-    }
-
-    // ag-Grid DOM 행 체크박스 실시간 동기화 클릭 함수
-    function selectAgGridDomRowCheckbox(doc, node) {
-        if (!doc || !node) return;
-        const selectors = [
-            `.ag-pinned-left-cols-container .ag-row[row-id="${node.id}"]`,
-            `.ag-pinned-left-cols-container .ag-row[row-index="${node.rowIndex}"]`,
-            `.ag-center-cols-container .ag-row[row-id="${node.id}"]`,
-            `.ag-center-cols-container .ag-row[row-index="${node.rowIndex}"]`,
-            `.ag-row[row-id="${node.id}"]`,
-            `.ag-row[row-index="${node.rowIndex}"]`
-        ];
-
-        for (const sel of selectors) {
-            const rowEl = doc.querySelector(sel);
-            if (!rowEl) continue;
-            const chk = rowEl.querySelector("input[type='checkbox'], .ag-selection-checkbox, div[class*='ag-checkbox'], [role='checkbox'], span[class*='ag-icon-checkbox']");
-            if (chk) {
-                if (chk.tagName === "INPUT") {
-                    if (!chk.checked) {
-                        chk.click();
-                        if (!chk.checked) chk.checked = true;
-                        chk.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                } else {
-                    const isChecked = chk.classList.contains("ag-checked") || chk.querySelector(".ag-icon-checkbox-checked");
-                    if (!isChecked) {
-                        chk.click();
-                    }
-                }
-                break;
-            }
-        }
-    }
-
-    // 이번 세션에서 이미 답글을 등록했거나 오류가 발생했던 리뷰 서명(ID/지문) 메모리
+    // 이번 세션에서 이미 답글을 등록한 리뷰 서명(ID/지문) 메모리
     const processedSignatures = new Set();
 
     function getRowSignature(trOrData) {
@@ -1259,13 +1100,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         return txt.slice(0, 60);
     }
 
-    // 스마트스토어 화면 목록 새로고침 (in-page AJAX)
+    // 스마트스토어 화면 목록 새로고침 (in-page AJAX [검색] 클릭)
     async function refreshReviewList(targetDoc = document) {
-        // 이미 작성된 건 팝업이 있다면 먼저 닫기
-        dismissAlreadyAnsweredPopup();
-        // [답글여부: 미등록] 필터가 풀려있으면 다시 선택
-        ensureUnansweredFilterSelected();
-
         const sBtn = findSearchButton(targetDoc);
         if (sBtn) {
             sBtn.focus();
@@ -1303,9 +1139,18 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         const { scoreColId, prodColId, contentColId, replyColId } = api ? resolveAgGridCols(api) : {};
         const { scoreColIdx, prodColIdx, contentColIdx, replyColIdx } = reviewInfo.table ? resolveTableColIndexes(reviewInfo.table) : {};
 
-        // 이전 잔여 경고 팝업 닫기 및 체크박스 전원 초기화
-        dismissAlreadyAnsweredPopup();
-        clearAllSelections(api, reviewInfo);
+        // 기존 선택 초기화 (오직 그리드/테이블 행 내부만 초기화하여 상단 검색조건 100% 보호)
+        if (api && typeof api.deselectAll === "function") {
+            try { api.deselectAll(); } catch(e) {}
+        } else if (reviewInfo.rows) {
+            for (const tr of reviewInfo.rows) {
+                const c = tr.querySelector("input[type='checkbox']");
+                if (c && c.checked) {
+                    c.checked = false;
+                    c.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }
+        }
 
         let selectedCount = 0;
         let skippedBad = 0;
@@ -1321,6 +1166,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 if (selectedCount >= BATCH_TARGET_LIMIT) return;
                 const d = node.data || {};
                 const rowEl = document.querySelector(`.ag-row[row-id="${node.id}"], .ag-row[row-index="${node.rowIndex}"]`);
+                const rowText = rowEl ? (rowEl.innerText || "").replace(/\s+/g, " ") : JSON.stringify(d);
 
                 // 1. 이번 세션에서 이미 처리된 서명이면 무조건 제외
                 const sig = getRowSignature(d) || (rowEl ? getRowSignature(rowEl) : "");
@@ -1343,8 +1189,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     return;
                 }
 
-                const domText = rowEl ? rowEl.innerText : "";
-                if (domText.includes("답글보기") || domText.includes("답글완료") || domText.includes("답글수정") || domText.includes("등록완료") || domText.includes("답변완료")) {
+                if (rowText.includes("답글보기") || rowText.includes("답글완료") || rowText.includes("답글수정") || rowText.includes("등록완료") || rowText.includes("답변완료")) {
                     skippedAnswered++;
                     return;
                 }
@@ -1354,45 +1199,41 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
                 // 🚨 1~2점 저평점 리뷰는 100% 무조건 제외 (절대 자동답글 금지)
                 if (score <= 2) {
-                    console.log(`[베베숲 1~2점 차단] 평점 ${score}점 감지되어 자동답글 제외`);
                     skippedBad++;
                     return;
                 }
 
                 // 4. 리뷰 본문 정밀 추출
-                const reviewText = extractReviewContent(d, rowEl, contentColId, -1, api, node);
+                const reviewText = extractReviewContent(d, rowEl, contentColId, -1, api, node) || rowText;
 
                 // 🚨 은닉 불만 방지: 본문이 말줄임표(...)로 끝나고 잘려있는 3점 리뷰는 뒷부분 불만 위험이 있으므로 안전 제외
                 const isTruncated = reviewText.endsWith("...") || reviewText.endsWith("…");
                 if (isTruncated && score <= 3) {
-                    console.log(`[베베숲 은닉불만 방지] 말줄임표로 잘린 3점 리뷰 안전 제외 (${reviewText})`);
                     skippedBad++;
                     return;
                 }
 
                 // 5. 부정어/결함/주의 키워드 정밀 검사
-                const matchedBad = badWords.filter(w => reviewText.includes(w));
+                const matchedBad = badWords.filter(w => reviewText.includes(w) || rowText.includes(w));
 
                 // 🚨 3점 리뷰는 엄격 검사: 불만/애매/초단문 표현이 1개라도 있으면 100% 제외!
                 if (score === 3) {
                     if (matchedBad.length > 0 || reviewText.length < 5) {
-                        console.log(`[베베숲 3점 차단] 불만/애매/초단문 제외 (사유: ${matchedBad.join(', ') || '초단문'})`);
                         skippedBad++;
                         return;
                     }
                 } else {
                     // 4~5점 리뷰: 불만 키워드 감지 시 즉시 제외
                     if (matchedBad.length > 0) {
-                        console.log(`[베베숲 불만 차단] 키워드 감지 (${matchedBad.join(', ')})`);
                         skippedBad++;
                         return;
                     }
                 }
 
                 // 6. 상품명 정밀 추출 및 카테고리 엄격 분리
-                const prodName = extractProductName(d, rowEl, prodColId, -1, api, node);
-                const isSkincare = skincareKeywords.some(k => prodName.includes(k));
-                const isDetergent = detergentKeywords.some(k => prodName.includes(k));
+                const prodName = extractProductName(d, rowEl, prodColId, -1, api, node) || rowText;
+                const isSkincare = skincareKeywords.some(k => prodName.includes(k) || rowText.includes(k));
+                const isDetergent = detergentKeywords.some(k => prodName.includes(k) || rowText.includes(k));
 
                 if (category === "SKINCARE") {
                     if (!isSkincare) {
@@ -1412,9 +1253,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     }
                 }
 
-                // 선별 통과!
+                // 선별 통과! ag-Grid 네이티브 선택
                 node.setSelected(true, false);
-                selectAgGridDomRowCheckbox(reviewInfo.doc || document, node);
                 if (sig) currentBatchSigs.push(sig);
                 selectedCount++;
             });
@@ -1427,6 +1267,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     skippedAnswered++;
                     continue;
                 }
+
+                const rowText = (tr.innerText || "").replace(/\s+/g, " ");
 
                 // 1. 이미 답글완료 건 제외
                 const tds = Array.from(tr.querySelectorAll("td"));
@@ -1443,7 +1285,6 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     }
                 }
                 if (!isAlreadyAnswered) {
-                    const rowText = (tr.innerText || "").replace(/\s+/g, " ");
                     isAlreadyAnswered = rowText.includes("답글보기") || rowText.includes("답글수정") || rowText.includes("답글완료") || rowText.includes("등록완료") || rowText.includes("답변완료");
                 }
 
@@ -1457,45 +1298,41 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
                 // 🚨 1~2점 저평점 리뷰는 100% 무조건 제외 (절대 자동답글 금지)
                 if (score <= 2) {
-                    console.log(`[베베숲 1~2점 차단] 평점 ${score}점 감지되어 제외`);
                     skippedBad++;
                     continue;
                 }
 
                 // 3. 리뷰 본문 정밀 추출
-                const reviewText = extractReviewContent(null, tr, null, contentColIdx, null, null);
+                const reviewText = extractReviewContent(null, tr, null, contentColIdx, null, null) || rowText;
 
                 // 🚨 은닉 불만 방지: 본문이 말줄임표(...)로 끝나고 잘려있는 3점 리뷰는 뒷부분 불만 위험이 있으므로 안전 제외
                 const isTruncated = reviewText.endsWith("...") || reviewText.endsWith("…");
                 if (isTruncated && score <= 3) {
-                    console.log(`[베베숲 은닉불만 방지] 말줄임표로 잘린 3점 리뷰 안전 제외 (${reviewText})`);
                     skippedBad++;
                     continue;
                 }
 
                 // 4. 부정어/결함/주의 키워드 정밀 검사
-                const matchedBad = badWords.filter(w => reviewText.includes(w));
+                const matchedBad = badWords.filter(w => reviewText.includes(w) || rowText.includes(w));
 
                 // 🚨 3점 리뷰는 엄격 검사: 불만/애매/초단문 표현이 1개라도 있으면 100% 제외!
                 if (score === 3) {
                     if (matchedBad.length > 0 || reviewText.length < 5) {
-                        console.log(`[베베숲 3점 차단] 불만/애매/초단문 제외 (사유: ${matchedBad.join(', ') || '초단문'})`);
                         skippedBad++;
                         continue;
                     }
                 } else {
                     // 4~5점 리뷰: 불만 키워드 감지 시 즉시 제외
                     if (matchedBad.length > 0) {
-                        console.log(`[베베숲 불만 차단] 키워드 감지 (${matchedBad.join(', ')})`);
                         skippedBad++;
                         continue;
                     }
                 }
 
                 // 5. 상품명 정밀 추출 및 카테고리 엄격 분리
-                const prodName = extractProductName(null, tr, null, prodColIdx, null, null);
-                const isSkincare = skincareKeywords.some(k => prodName.includes(k));
-                const isDetergent = detergentKeywords.some(k => prodName.includes(k));
+                const prodName = extractProductName(null, tr, null, prodColIdx, null, null) || rowText;
+                const isSkincare = skincareKeywords.some(k => prodName.includes(k) || rowText.includes(k));
+                const isDetergent = detergentKeywords.some(k => prodName.includes(k) || rowText.includes(k));
 
                 if (category === "SKINCARE") {
                     if (!isSkincare) {
@@ -1515,24 +1352,14 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     }
                 }
 
-                // 6. 체크박스 체크 (다양한 ag-Grid/DOM 체크박스 호환)
-                const chk = tr.querySelector("input[type='checkbox'], .ag-selection-checkbox, div[class*='ag-checkbox'], [role='checkbox']");
+                // 6. 체크박스 체크 (DOM input 직접 체크 설정)
+                const chk = tr.querySelector("input[type='checkbox']");
                 if (chk) {
-                    if (chk.tagName === "INPUT") {
-                        if (!chk.checked) {
-                            chk.click();
-                            if (!chk.checked) chk.checked = true;
-                            chk.dispatchEvent(new Event('input', { bubbles: true }));
-                            chk.dispatchEvent(new Event('change', { bubbles: true }));
-                            if (sig) currentBatchSigs.push(sig);
-                            selectedCount++;
-                        }
-                    } else {
-                        // ag-checkbox wrapper
-                        chk.click();
-                        if (sig) currentBatchSigs.push(sig);
-                        selectedCount++;
-                    }
+                    chk.checked = true;
+                    chk.dispatchEvent(new Event('input', { bubbles: true }));
+                    chk.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (sig) currentBatchSigs.push(sig);
+                    selectedCount++;
                 }
             }
         }
@@ -1541,48 +1368,20 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             return { status: "EMPTY", skippedAnswered, skippedBad, skippedCategory };
         }
 
-        // AngularJS scope 동기화 (선택 변경을 네이버 컨트롤러에 즉시 전파)
-        try {
-            const win = (reviewInfo.doc || document).defaultView || window;
-            if (win.angular) {
-                const rootEl = (reviewInfo.doc || document).querySelector(".ag-root-wrapper, .ag-root, [role='grid'], table, #content");
-                if (rootEl) {
-                    const scope = win.angular.element(rootEl).scope();
-                    if (scope && !scope.$$phase) scope.$apply();
-                }
-            }
-        } catch(e) {}
-
-        // 브라우저 DOM 렌더링 및 체크박스 이벤트 루프 처리 대기 (인식 실패 100% 방지)
-        await sleep(400);
-
         runBtn.innerText = `⏳ [${catLabel}] ${selectedCount}개 작성 중...`;
 
         // 1. 답글작성 버튼 탐색 (테이블 인근 툴바 및 전역/iframe)
         const replyBtn = findBatchReplyButton(reviewInfo.doc, reviewInfo.table);
         if (!replyBtn) return { status: "NO_BUTTON" };
 
+        await sleep(500);
         replyBtn.focus();
-        replyBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-        replyBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
         replyBtn.click();
 
         return new Promise((resolve) => {
             let checkAttempts = 0;
             const fillInterval = setInterval(async () => {
                 checkAttempts++;
-
-                // 스마트스토어의 시스템 경고 팝업 감지 시 자동 닫기 및 처리
-                const alertType = dismissSystemAlertPopup();
-                if (alertType === "ALREADY_ANSWERED") {
-                    clearInterval(fillInterval);
-                    clearAllSelections(api, reviewInfo);
-                    for (const s of currentBatchSigs) { if (s) processedSignatures.add(s); }
-                    return resolve({ status: "ALREADY_ANSWERED_WARN" });
-                } else if (alertType === "NO_SELECTION") {
-                    clearInterval(fillInterval);
-                    return resolve({ status: "NO_SELECTION_ALERT" });
-                }
 
                 const modalInfo = findReplyModalInfo(reviewInfo.doc);
                 if (modalInfo && modalInfo.textarea) {
@@ -1904,9 +1703,4 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             }
         }, 500);
     }
-
-    // 6. '이미 답글을 작성한 리뷰' 팝업 발생 시 0.5초 내 자동 즉시 닫기 상시 워처
-    setInterval(() => {
-        dismissAlreadyAnsweredPopup();
-    }, 500);
 })();
