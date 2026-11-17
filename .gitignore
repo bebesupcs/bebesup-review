@@ -1,0 +1,4 @@
+*.xlsx
+*.zip
+*.tmp
+.DS_Store
