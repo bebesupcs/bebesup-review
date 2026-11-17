@@ -60,7 +60,7 @@
                 ${isAutoLooping ? "자동 진행 중" : "베베숲 AI"}
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.1 (스마트스토어 체크박스 동기화 & 모달격리)
+                v2.8.2 (F12 안전 시뮬레이션 모드 탑재)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -73,9 +73,9 @@
             </select>
 
             <select id="bebesup-run-mode" style="font-size:11px; padding:3px 7px; border-radius:15px; border:1.5px solid #f57c00; color:#e65100; outline:none; font-weight:bold; background:#fff8e1;">
-                <option value="AUTO_ALL" selected>🚀 전자동 연속 실행 (50개씩 끝까지 자동)</option>
+                <option value="TEST" selected>👀 눈으로 확인 모드 (F12 로그 & 등록 안 누름)</option>
                 <option value="ONCE_REAL">⚡ 1회 5개만 등록 (테스트용 새로고침)</option>
-                <option value="TEST">👀 눈으로 확인 모드 (등록 안 누름)</option>
+                <option value="AUTO_ALL">🚀 전자동 연속 실행 (50개씩 끝까지 자동)</option>
             </select>
 
             <!-- 실행/중지 버튼 -->
@@ -1117,6 +1117,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
     // 단일 배치(50개) 처리 함수
     async function executeSingleBatch(category, mode) {
+        const isTestMode = (mode === "TEST");
         let catLabel = "전라인 공통(물티슈)";
         // 🌿 물티슈/전라인 전용 정성 공식 답글
         let replyMsg = "안녕하세요. 베베숲입니다. 소중한 리뷰 감사드립니다.\n언제나 아기 피부에 닿는 만큼 더욱 순하고 도톰하게 정성을 담겠습니다.\n궁금한 점이 생기시면 언제든 편하게 말씀해 주세요😊\n앞으로도 만족스러운 경험을 드릴 수 있도록 노력하겠습니다💚";
@@ -1131,10 +1132,17 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             replyMsg = "안녕하세요. 베베숲입니다. 소중한 리뷰 감사드립니다.\n온 가족 안심 세탁을 위해 깨끗한 세정력과 순한 안심 성분으로 보답하겠습니다.\n궁금한 점이 생기시면 언제든 편하게 말씀해 주세요😊\n앞으로도 만족스러운 경험을 드릴 수 있도록 노력하겠습니다💚";
         }
 
+        if (isTestMode) {
+            console.group(`🌿 [베베숲 AI] 눈으로 확인 모드 (안전 시뮬레이션 동작 중) - [${catLabel}]`);
+            console.log("%c• 안내: 실제 [등록] 버튼은 절대 누르지 않으며, 체크박스 선택 -> [답글작성] 클릭 -> 공식 문구 주입까지만 안전하게 시뮬레이션합니다.", "color: #0288d1; font-weight: bold; font-size: 12px;");
+            console.log("%c• F12 콘솔에서 각 리뷰별 평점/불만어/카테고리 선별 결과를 1건씩 확인하실 수 있습니다.", "color: #555;");
+        }
+
         const api = getGridApi();
         const reviewInfo = findReviewTableInfo();
 
         if (!api && reviewInfo.rows.length === 0) {
+            if (isTestMode) console.groupEnd();
             return { status: "WAIT" };
         }
 
@@ -1302,6 +1310,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 }
 
                 if (isAlreadyAnswered) {
+                    if (isTestMode) console.log(`%c[스킵 - 이미답변] ${rowText.slice(0, 30)}...`, "color: #888;");
                     skippedAnswered++;
                     continue;
                 }
@@ -1311,6 +1320,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
                 // 🚨 1~2점 저평점 리뷰는 100% 무조건 제외 (절대 자동답글 금지)
                 if (score <= 2) {
+                    if (isTestMode) console.log(`%c[스킵 - 저평점 ★${score}] ${reviewText.slice(0, 30)}...`, "color: #e53935; font-weight: bold;");
                     skippedBad++;
                     continue;
                 }
@@ -1321,6 +1331,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 // 🚨 은닉 불만 방지: 본문이 말줄임표(...)로 끝나고 잘려있는 3점 리뷰는 뒷부분 불만 위험이 있으므로 안전 제외
                 const isTruncated = reviewText.endsWith("...") || reviewText.endsWith("…");
                 if (isTruncated && score <= 3) {
+                    if (isTestMode) console.log(`%c[스킵 - 3점 말줄임표(...) 불만 은닉주의] ${reviewText.slice(0, 30)}...`, "color: #f57c00;");
                     skippedBad++;
                     continue;
                 }
@@ -1331,12 +1342,14 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 // 🚨 3점 리뷰는 엄격 검사: 불만/애매/초단문 표현이 1개라도 있으면 100% 제외!
                 if (score === 3) {
                     if (matchedBad.length > 0 || reviewText.length < 5) {
+                        if (isTestMode) console.log(`%c[스킵 - 3점 불만/단문 키워드: "${matchedBad.join(', ')}"] ${reviewText.slice(0, 30)}...`, "color: #d32f2f;");
                         skippedBad++;
                         continue;
                     }
                 } else {
                     // 4~5점 리뷰: 불만 키워드 감지 시 즉시 제외
                     if (matchedBad.length > 0) {
+                        if (isTestMode) console.log(`%c[스킵 - 불만/결함 키워드: "${matchedBad.join(', ')}"] ★${score} | ${reviewText.slice(0, 30)}...`, "color: #d32f2f; font-weight: bold;");
                         skippedBad++;
                         continue;
                     }
@@ -1349,17 +1362,20 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
                 if (category === "SKINCARE") {
                     if (!isSkincare) {
+                        if (isTestMode) console.log(`%c[스킵 - 스킨케어 상품 아님] 상품: ${prodName.slice(0, 20)}`, "color: #7b1fa2;");
                         skippedCategory++;
                         continue;
                     }
                 } else if (category === "DETERGENT") {
                     if (!isDetergent) {
+                        if (isTestMode) console.log(`%c[스킵 - 세제 상품 아님] 상품: ${prodName.slice(0, 20)}`, "color: #7b1fa2;");
                         skippedCategory++;
                         continue;
                     }
                 } else if (category === "WIPES") {
                     // 물티슈(전라인): 스킨케어나 세제 상품은 100% 배제!
                     if (isSkincare || isDetergent) {
+                        if (isTestMode) console.log(`%c[스킵 - 물티슈 외 타제품] 상품: ${prodName.slice(0, 20)}`, "color: #7b1fa2;");
                         skippedCategory++;
                         continue;
                     }
@@ -1378,19 +1394,34 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     }
                     if (sig) currentBatchSigs.push(sig);
                     selectedCount++;
+                    if (isTestMode) {
+                        console.log(`%c✅ [통과 #${selectedCount}] 체크박스 선택됨 | ★${score} | 상품: ${prodName.slice(0, 20)} | 내용: "${reviewText.slice(0, 30)}..."`, "color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 4px;");
+                    }
                 }
             }
         }
 
         if (selectedCount === 0) {
+            if (isTestMode) {
+                console.warn(`[선별 결과 0건] 불만/저평점 제외: ${skippedBad}건 | 기답변 제외: ${skippedAnswered}건 | 타카테고리 제외: ${skippedCategory}건`);
+                console.groupEnd();
+            }
             return { status: "EMPTY", skippedAnswered, skippedBad, skippedCategory };
+        }
+
+        if (isTestMode) {
+            console.log(`%c📊 [선별 집계 완료] 선택 통과: ${selectedCount}건 | 불만/저평점 제외: ${skippedBad}건 | 기답변 제외: ${skippedAnswered}건 | 타카테고리 제외: ${skippedCategory}건`, "background: #e8f5e9; color: #1b5e20; font-weight: bold; padding: 4px; font-size: 12px;");
+            console.log(`%c🔘 [1단계 성공] 테이블 체크박스 ${selectedCount}개 선택 완료! -> [답글작성] 버튼 클릭 중...`, "color: #0288d1; font-weight: bold;");
         }
 
         runBtn.innerText = `⏳ [${catLabel}] ${selectedCount}개 작성 중...`;
 
         // 1. 답글작성 버튼 탐색 (테이블 인근 툴바 및 전역/iframe)
         const replyBtn = findBatchReplyButton(reviewInfo.doc, reviewInfo.table);
-        if (!replyBtn) return { status: "NO_BUTTON" };
+        if (!replyBtn) {
+            if (isTestMode) console.groupEnd();
+            return { status: "NO_BUTTON" };
+        }
 
         await sleep(500);
         replyBtn.focus();
@@ -1429,8 +1460,13 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     replyBox.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ', code: 'Space' }));
 
                     if (mode === "TEST") {
+                        console.log("%c✍️ [2단계 성공] 모달 팝업 감지 완료 -> [답글 내용] 입력창에 공식 맞춤 문구 주입 성공!", "color: #00897b; font-weight: bold;");
+                        console.log("%c" + replyMsg, "color: #2e7d32; background: #f1f8e9; padding: 8px; border-left: 4px solid #00b050; font-size: 11px; font-family: monospace;");
+                        console.log("%c🛡️ [안전 시뮬레이션 완료] 실제 [등록] 버튼은 누르지 않고 팝업창을 그대로 열어둔 상태로 대기합니다. 화면의 체크박스와 모달 내용을 직접 눈으로 확인해 보세요!", "color: #e65100; font-weight: bold; background: #fff3e0; padding: 8px; font-size: 12px; border-radius: 4px;");
+                        console.groupEnd();
+
                         runBtn.innerText = `✅ [${catLabel}] ${selectedCount}개 확인완료`;
-                        setTimeout(() => { runBtn.innerText = "▶ 자동 실행 시작"; }, 3000);
+                        setTimeout(() => { runBtn.innerText = "▶ 자동 실행 시작"; }, 4000);
                         return resolve({ status: "TEST_DONE", count: selectedCount });
                     }
 
@@ -1661,7 +1697,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 const res = await executeSingleBatch(category, "TEST");
                 runBtn.innerText = "▶ 자동 실행 시작";
                 if (res.status === "TEST_DONE") {
-                    alert(`✅ [눈으로 확인 완료]\n\n총 ${res.count}개의 미답변 칭찬 리뷰가 선택되었고, 하단 [답글 내용] 칸에 베베숲 공식 문구가 자동 입력되었습니다!\n\n💡 [등록 및 새로고침]까지 실제로 동작하는지 테스트하시려면, 상단 모드를 [⚡ 1회 5개만 등록]으로 변경 후 실행해 보세요😊`);
+                    alert(`🛡️ [눈으로 확인 모드 - 시뮬레이션 완료]\n\n• 선별된 칭찬 리뷰: ${res.count}건\n• 화면의 테이블 체크박스가 실제로 선택되었고, [답글작성] 팝업창에 맞춤 답글이 입력되었습니다!\n• ❌ 실제 [등록] 버튼은 누르지 않고 팝업창을 띄워둔 채 안전하게 멈췄습니다.\n\n💡 F12 키를 눌러 [Console(콘솔)] 탭을 보시면, 어떤 리뷰가 왜 통과되었고 어떤 리뷰가 왜 제외되었는지 1건씩 컬러 로그로 확인하실 수 있습니다!`);
                 } else if (res.status === "NO_SELECTION_ALERT") {
                     alert("⚠️ 스마트스토어에서 선택된 리뷰를 인식하지 못했습니다.\n체크박스를 수동으로 1개 선택해 보신 뒤 다시 시도해 주세요.");
                 } else if (res.status === "EMPTY") {
