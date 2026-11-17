@@ -12,6 +12,18 @@
         document.getElementById("bebesup-helper-panel").remove();
     }
 
+    // 상세검색 영역에 오입력되었던 답글 텍스트 자동 복구/정리
+    try {
+        const detailTas = document.querySelectorAll("textarea");
+        for (const ta of detailTas) {
+            if (ta.value && ta.value.includes("베베숲입니다. 소중한 리뷰 감사드립니다")) {
+                ta.value = "";
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+                ta.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }
+    } catch(e) {}
+
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
     // 세션 스토리지에서 자동 반복 실행 상태 확인
@@ -48,7 +60,7 @@
                 ${isAutoLooping ? "자동 진행 중" : "베베숲 AI"}
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.0 (답글엔진 전면복원 & 안정화)
+                v2.8.1 (스마트스토어 체크박스 동기화 & 모달격리)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -272,12 +284,15 @@
         for (const doc of docs) {
             if (!doc) continue;
 
-            // 1. "판매자 일괄 답글 작성" 모달 컨테이너 탐색
+            // 1. "판매자 일괄 답글 작성" 모달 컨테이너 탐색 (실제 화면에 표시된 모달만 검사)
             const modals = Array.from(doc.querySelectorAll(".modal-content, div.modal, [role='dialog'], .n-layer-popup, div[class*='layer_popup'], div[class*='modal'], div[class*='popup'], div[class*='layer']"));
             const targetModal = modals.find(m => {
+                if (m.closest("#bebesup-helper-panel")) return false;
                 const txt = (m.innerText || "").replace(/\s+/g, "");
-                return txt.includes("일괄답글") || txt.includes("답글작성") || txt.includes("답글내용") || txt.includes("답글") || txt.includes("답변");
-            }) || modals[0];
+                // 경고/에러 알림("리뷰를 선택해주세요" 등)은 답글 작성 모달이 아니므로 제외
+                if (txt.includes("선택해주세요") || txt.includes("초과되었습니다") || (txt.includes("오류") && !txt.includes("답글"))) return false;
+                return txt.includes("일괄답글") || txt.includes("답글작성") || txt.includes("답글내용") || (txt.includes("답글") && (txt.includes("등록") || txt.includes("작성")));
+            });
 
             if (targetModal) {
                 const tas = Array.from(targetModal.querySelectorAll("textarea, [contenteditable='true']")).filter(t => !t.closest("#bebesup-helper-panel"));
@@ -287,18 +302,6 @@
                 } else if (tas.length === 1) {
                     return { modal: targetModal, textarea: tas[0], doc };
                 }
-            }
-
-            // 2. 모달 밖 전역 탐색
-            const allTas = Array.from(doc.querySelectorAll("textarea, [contenteditable='true']")).filter(t => !t.closest("#bebesup-helper-panel"));
-            if (allTas.length >= 2) {
-                const replyBox = allTas[1] || allTas[allTas.length - 1];
-                const modal = replyBox.closest(".modal-content, div.modal, [role='dialog'], .n-layer-popup, div[class*='layer_popup'], div[class*='modal'], div[class*='popup']") || replyBox.parentElement;
-                return { modal, textarea: replyBox, doc };
-            } else if (allTas.length === 1) {
-                const replyBox = allTas[0];
-                const modal = replyBox.closest(".modal-content, div.modal, [role='dialog'], .n-layer-popup, div[class*='layer_popup'], div[class*='modal'], div[class*='popup']") || replyBox.parentElement;
-                return { modal, textarea: replyBox, doc };
             }
         }
         return null;
@@ -1142,12 +1145,16 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         // 기존 선택 초기화 (오직 그리드/테이블 행 내부만 초기화하여 상단 검색조건 100% 보호)
         if (api && typeof api.deselectAll === "function") {
             try { api.deselectAll(); } catch(e) {}
-        } else if (reviewInfo.rows) {
+        }
+        if (reviewInfo.rows && reviewInfo.rows.length > 0) {
             for (const tr of reviewInfo.rows) {
                 const c = tr.querySelector("input[type='checkbox']");
                 if (c && c.checked) {
-                    c.checked = false;
-                    c.dispatchEvent(new Event('change', { bubbles: true }));
+                    c.click();
+                    if (c.checked) {
+                        c.checked = false;
+                        c.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
                 }
             }
         }
@@ -1255,6 +1262,12 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
                 // 선별 통과! ag-Grid 네이티브 선택
                 node.setSelected(true, false);
+                if (rowEl) {
+                    const chk = rowEl.querySelector("input[type='checkbox']");
+                    if (chk && !chk.checked) {
+                        chk.click();
+                    }
+                }
                 if (sig) currentBatchSigs.push(sig);
                 selectedCount++;
             });
@@ -1352,12 +1365,17 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     }
                 }
 
-                // 6. 체크박스 체크 (DOM input 직접 체크 설정)
+                // 6. 체크박스 체크 (실제 사용자 클릭 시뮬레이션으로 스마트스토어 모델 연동)
                 const chk = tr.querySelector("input[type='checkbox']");
                 if (chk) {
-                    chk.checked = true;
-                    chk.dispatchEvent(new Event('input', { bubbles: true }));
-                    chk.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (!chk.checked) {
+                        chk.click();
+                    }
+                    if (!chk.checked) {
+                        chk.checked = true;
+                        chk.dispatchEvent(new Event('input', { bubbles: true }));
+                        chk.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
                     if (sig) currentBatchSigs.push(sig);
                     selectedCount++;
                 }
