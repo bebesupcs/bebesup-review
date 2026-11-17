@@ -344,13 +344,31 @@
                 // 2. YELLOW 검사 (속성 불만 / 품질 개선 VOC)
                 let isYellow = false;
 
-                if (["헐거", "열려", "안닫", "뚜껑", "캡 헐", "캡이 헐", "캡 부러"].some(k => text.includes(k))) {
+                if (["반품", "새거가 아닌", "새것이 아닌", "새상품이 아닌", "새제품이 아닌", "중고", "누가 쓰던", "쓰던", "개봉", "뜯어진", "포장지", "포장 불량", "포장 상태", "포장 엉망", "포장이 엉망", "변색", "지워지지", "주의부탁", "주의 부탁", "배송 오류", "배송오류", "오배송", "누락", "배송에 이런"].some(k => text.includes(k))) {
+                    issueCounts["배송/박스파손"]++;
+                    issueType = "배송/포장/반품의심/변색";
+                    rootCause = "반품/중고 의심 또는 외관 포장 오염/변색/배송 착오";
+                    action = "🚨 물류/검수팀 출고 이력 점검 & 고객 안심 1:1 안내";
+                    isYellow = true;
+                } else if (["패스 하", "패스하", "패스합", "패스요", "패스 권", "패스하세요", "두꺼운 걸 찾", "두꺼운 거 찾", "사지 마", "사지마", "구매하지 마", "비추", "살 걸", "살걸", "괜히 샀", "교환하고 싶", "교환 원", "환불하고 싶", "제조일"].some(k => text.includes(k))) {
+                    issueCounts["기타 불만"]++;
+                    issueType = "구매만류/교환희망/후회";
+                    rootCause = "고객 불만족으로 인한 타 구매자 만류 또는 교환/환불 희망";
+                    action = "🟡 1:1 상담 연결 및 교환/반품 CS 지원";
+                    isYellow = true;
+                } else if (["재단", "실처럼", "실밥", "올 풀림", "올풀림", "마감 불량", "마감 아쉽", "깔끔하지 않", "너무 얇", "두께 얇", "두께 아쉽", "얇아", "얇네", "비쳐", "비침", "너무 작", "사이즈 작", "크기 작"].some(k => text.includes(k))) {
+                    issueCounts["원단/두께/사이즈"]++;
+                    issueType = "원단/재단/실밥/두께";
+                    rootCause = "원단 재단/마감 품질 불량 또는 두께 기대치 미달";
+                    action = "🟡 생산품질팀 원단 컷팅/실밥 공정 점검 VOC 공유";
+                    isYellow = true;
+                } else if (["헐거", "열려", "안닫", "뚜껑", "캡 헐", "캡이 헐", "캡 부러"].some(k => text.includes(k))) {
                     issueCounts["캡/뚜껑 헐거움"]++;
                     issueType = "캡/뚜껑 헐거움";
                     rootCause = "캡 체결 장력 불량 또는 스티커 밀봉 약함";
                     action = "🟡 캡 체결 공정 VOC 공유 & 공감 사과 답글";
                     isYellow = true;
-                } else if (["마름", "말라", "물기 부족", "물기 없", "물기 적"].some(k => text.includes(k))) {
+                } else if (["마름", "말라", "물기 부족", "물기 없", "물기 마", "물기 적", "수분이 좀", "수분 아쉽", "뒤집어서"].some(k => text.includes(k))) {
                     issueCounts["수분/마름/물기부족"]++;
                     issueType = "수분/마름/물기부족";
                     rootCause = "보관 중 수분 증발 또는 원단 함습량 편차";
@@ -367,12 +385,6 @@
                     issueType = "배송/박스파손";
                     rootCause = "택배 운송 중 충격으로 외박스 파손";
                     action = "🟡 택배사 파손 클레임 및 완충재 보강";
-                    isYellow = true;
-                } else if (["너무 얇", "두께 얇", "두께 아쉽", "비쳐", "비침", "너무 작", "사이즈 작", "크기 작"].some(k => text.includes(k))) {
-                    issueCounts["원단/두께/사이즈"]++;
-                    issueType = "원단/두께/사이즈";
-                    rootCause = "원단 평량/크기에 대한 소비자 기대 불일치";
-                    action = "🟡 상세페이지 평량(gsm)/사이즈 강조 보완";
                     isYellow = true;
                 } else if (["아토피", "효과 없", "효과가 없", "간지", "따가", "뒤집", "안맞"].some(k => text.includes(k))) {
                     issueCounts["피부/성분 민감"]++;
@@ -822,16 +834,33 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
     // 5. 리뷰 본문(내용) 정밀 추출기 (말줄임표 제거 및 온전한 원문 수집)
     function extractReviewContent(d, rowElOrTr, contentColId, contentColIdx, api, node) {
+        // 1) node.data 객체에서 텍스트 수집 (최장 문자열 우선 채택)
         if (d && typeof d === 'object') {
+            const candidates = [];
             const contentFields = [
                 'reviewContent', 'content', 'reviewBody', 'reviewText',
                 'contents', 'comment', 'detailContent', 'productReviewContent'
             ];
             for (const f of contentFields) {
-                if (d[f] && typeof d[f] === 'string' && d[f].trim()) return d[f].trim();
+                if (d[f] && typeof d[f] === 'string' && d[f].trim()) candidates.push(d[f].trim());
+            }
+            if (d.review && typeof d.review === 'object') {
+                for (const f of contentFields) {
+                    if (d.review[f] && typeof d.review[f] === 'string') candidates.push(d.review[f].trim());
+                }
+            }
+            if (d.productOrderReview && typeof d.productOrderReview === 'object') {
+                for (const f of contentFields) {
+                    if (d.productOrderReview[f] && typeof d.productOrderReview[f] === 'string') candidates.push(d.productOrderReview[f].trim());
+                }
+            }
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => b.length - a.length);
+                return candidates[0];
             }
         }
 
+        // 2) ag-Grid API로 셀 값 조회
         if (api && node && contentColId) {
             try {
                 const val = api.getValue(contentColId, node);
@@ -839,7 +868,24 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             } catch(e) {}
         }
 
+        // 3) DOM 엘리먼트 및 AngularJS Scope 탐색
         if (rowElOrTr) {
+            // AngularJS scope에서 원본 row 객체 탐색
+            if (window.angular) {
+                try {
+                    const scope = window.angular.element(rowElOrTr).scope();
+                    const rowData = scope?.row || scope?.data || scope?.item || scope?.review;
+                    if (rowData && typeof rowData === 'object') {
+                        const contentFields = ['reviewContent', 'content', 'reviewBody', 'reviewText', 'contents', 'comment'];
+                        for (const f of contentFields) {
+                            if (rowData[f] && typeof rowData[f] === 'string' && rowData[f].trim().length > 15) {
+                                return rowData[f].trim();
+                            }
+                        }
+                    }
+                } catch(e) {}
+            }
+
             let cell = null;
             if (contentColIdx >= 0 && rowElOrTr.querySelectorAll) {
                 const cells = Array.from(rowElOrTr.querySelectorAll("td, .ag-cell"));
@@ -849,8 +895,13 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             }
 
             if (cell) {
-                const titleAttr = cell.getAttribute("title") || cell.querySelector("[title]")?.getAttribute("title");
-                if (titleAttr && titleAttr.length > (cell.innerText || "").length) return titleAttr.trim();
+                // DOM 속성 (title, data-content, data-original-title 등)에서 더 긴 원문이 있는지 확인
+                for (const el of [cell, ...cell.querySelectorAll("*")]) {
+                    for (const attr of ["title", "data-content", "data-original-title", "data-text", "data-tooltip"]) {
+                        const v = el.getAttribute?.(attr);
+                        if (v && v.length > (cell.innerText || "").length) return v.trim();
+                    }
+                }
                 return (cell.innerText || cell.textContent || "").trim();
             }
             return (rowElOrTr.innerText || "").trim();
@@ -877,31 +928,50 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         "소프트", "클린", "홈", "레이온", "아이캔", "골드", "블루", "그린", "레드", "화이트", "보라"
     ];
 
-    // 강력 부정어 및 컴플레인 사전
+    // 강력 부정어 및 컴플레인 사전 (전면 보강)
     const badWords = [
-        // 🚨 안전성/위생/피부 중대 이슈 (RED)
+        // 🚨 1. 안전성/위생/피부 중대 이슈 (RED)
         "발진", "두드러기", "가려", "간지", "붉", "빨갛", "알레르기", "트러블", "피부염", "아토피",
         "병원", "피부과", "부작용", "따가", "따끔", "뒤집", "안맞아", "안맞네", "안 맞", "화상", "진물",
         "곰팡이", "이물질", "이물", "벌레", "악취", "냄새 심", "이상한 냄새", "썩", "변질", "침전",
         "더러", "오염", "얼룩", "재고", "먼지", "찝찝", "찜찜", "소송", "고발", "신고",
 
-        // 🟡 제품 하자/캡/원단/수분 결함 (DEFECT)
+        // 🟡 2. 중고/반품의심/개봉/포장 불량/변색 (DEFECT & PACKAGING)
+        "반품된", "반품된걸", "반품된거", "반품 건", "반품건", "반품 제품", "반품제품",
+        "새거가 아닌", "새것이 아닌", "새상품이 아닌", "새제품이 아닌", "새거 아니", "새것 아니",
+        "중고", "누가 쓰던", "쓰던 거", "쓰던거", "쓰던 것", "개봉된", "개봉 흔적", "뜯어진", "뜯겨", "재포장",
+        "변색", "하얗게 변", "누렇게", "색이 변", "포장지", "포장 불량", "포장상태", "포장 상태", "포장 엉망", "포장이 엉망",
+        "지워지지", "안 지워", "안지워", "주의부탁", "주의 부탁", "주의해주", "주의해 주", "배송에 이런",
+
+        // 🟡 3. 제품 하자/캡/원단/재단/실밥/수분/제조일 (DEFECT & QUALITY)
         "헐거", "열려있", "열려서", "열려", "안닫", "안 닫", "뚜껑 헐", "뚜껑 부러", "뚜껑 깨", "뚜껑 안",
         "캡이 헐", "캡 헐", "캡 열", "캡 안", "캡 부러", "캡 깨", "캡 불량", "스티커",
-        "마름", "말라있", "말라서", "말라", "마르", "물기 부족", "물기 없", "물기 마", "물기 적", "수분 부족", "수분 없", "건조",
+        "마름", "말라있", "말라서", "말라", "마르", "물기 부족", "물기 없", "물기 마", "물기 적", "수분 부족", "수분 없", "수분이 좀", "수분 아쉽", "건조",
+        "뒤집어서", "뒤집어 쓰", "뒤집어쓰",
         "터져", "터짐", "찌그러", "박스 파손", "박스파손", "박스 찢", "찢어", "찢김", "구멍", "불량", "파손",
         "새서", "새어", "흘러", "샜", "흘러나",
+        "재단", "실처럼", "실밥", "올 풀림", "올풀림", "마감 불량", "마감 아쉽", "마감이 아쉽", "깔끔하지 않",
+        "제조일", "제조일자", "생산일자", "제조년월", "오래된", "유통기한 임박", "유통기한",
         "너무 작", "사이즈 작", "사이즈 아쉽", "크기 작", "너무 얇", "두께 아쉽", "두께 얇", "얇아", "얇네", "비쳐", "비침",
         "거칠", "까칠", "끈적", "딸려나",
 
-        // 🚚 배송/서비스/교환/환불/극단 부정 (SERVICE & EXTREME)
-        "배송", "택배", "느려", "느림", "늦게", "늦음", "늦네", "안옴", "안왔", "안 왔", "누락", "오배송", "배송 오류", "배송지연", "지연",
+        // 🟡 4. 구매 만류 / 비추천 / 후회 / 교환·환불 희망 (RECOMMENDATION & CS)
+        "패스 하", "패스하", "패스합", "패스요", "패스 권", "패스 추천", "패스하세요", "패스 하세요",
+        "두꺼운 걸 찾", "두꺼운 거 찾", "두꺼운거 찾", "두꺼운걸 찾",
+        "사지 마", "사지마", "사지마세요", "사지 마세요", "구매하지 마", "구매 비추", "비추", "비추천",
+        "살 걸", "살걸", "살 걸 그", "살걸그", "괜히 샀", "괜히 삿", "후회", "실망", "돈 아깝", "돈아깝", "돈 버렸", "돈버렸",
+        "교환하고 싶", "교환 원", "교환 요청", "교환 부탁", "환불하고 싶", "환불 원", "환불 요청", "환불 부탁",
+        "뜯지만 않았다면", "개봉만 안", "뜯지만 안",
+
+        // 🚚 5. 배송/서비스/교환/환불/극단 부정 (SERVICE & EXTREME)
+        "배송 느려", "배송 늦", "배송이 느", "배송이 늦", "배송 지연", "배송지연", "택배 느", "택배 늦", "느려요", "느림", "늦게", "늦음", "늦네",
+        "안옴", "안왔", "안 왔", "누락", "오배송", "배송 오류", "배송오류",
         "교환", "환불", "반품", "취소", "불친절", "항의", "어이없", "어이 없", "화나", "황당", "기분 나", "기분나", "불만",
-        "최악", "쓰레기", "다시는", "다신", "비추", "비추천", "후회", "사지마", "돈 아깝", "돈아깝", "돈 버렸", "돈버렸", "사기",
+        "최악", "쓰레기", "다시는", "다신", "사기", "사기꾼", "장사 이따위", "다신 안", "다시는 안",
         "횡포", "차별", "상술", "배신", "사악", "창렬", "사용불가", "사용삭제", "막아버", "할인율 변경", "혜택 축소", "가격 인상", "가격 비싸", "너무 비싸", "비싸요",
 
-        // ⚠️ 3점 애매/아쉬움/실망 표현 (AMBIVALENT)
-        "실망", "별로", "아쉽네", "아쉽습", "아쉬워", "아쉬움", "아쉽", "그냥 그래", "그냥그래", "그닥", "그저 그", "그저그", "보통이에", "애매", "글쎄", "글쎄요",
+        // ⚠️ 6. 3점 애매/아쉬움/실망 표현 (AMBIVALENT)
+        "별로", "아쉽네", "아쉽습", "아쉬워", "아쉬움", "아쉽", "그냥 그래", "그냥그래", "그닥", "그저 그", "그저그", "보통이에", "애매", "글쎄", "글쎄요",
         "재구매는 안", "재구매 안", "재구매 의사 없", "다시 안", "효과 없", "효과가 없", "효과는 없", "효과 못", "효과가 안"
     ];
 
@@ -1224,6 +1294,14 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 // 4. 리뷰 본문 정밀 추출
                 const reviewText = extractReviewContent(d, rowEl, contentColId, -1, api, node);
 
+                // 🚨 은닉 불만 방지: 본문이 말줄임표(...)로 끝나고 잘려있는 3점 리뷰는 뒷부분 불만 위험이 있으므로 안전 제외
+                const isTruncated = reviewText.endsWith("...") || reviewText.endsWith("…");
+                if (isTruncated && score <= 3) {
+                    console.log(`[베베숲 은닉불만 방지] 말줄임표로 잘린 3점 리뷰 안전 제외 (${reviewText})`);
+                    skippedBad++;
+                    return;
+                }
+
                 // 5. 부정어/결함/주의 키워드 정밀 검사
                 const matchedBad = badWords.filter(w => reviewText.includes(w));
 
@@ -1317,6 +1395,14 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
                 // 3. 리뷰 본문 정밀 추출
                 const reviewText = extractReviewContent(null, tr, null, contentColIdx, null, null);
+
+                // 🚨 은닉 불만 방지: 본문이 말줄임표(...)로 끝나고 잘려있는 3점 리뷰는 뒷부분 불만 위험이 있으므로 안전 제외
+                const isTruncated = reviewText.endsWith("...") || reviewText.endsWith("…");
+                if (isTruncated && score <= 3) {
+                    console.log(`[베베숲 은닉불만 방지] 말줄임표로 잘린 3점 리뷰 안전 제외 (${reviewText})`);
+                    skippedBad++;
+                    continue;
+                }
 
                 // 4. 부정어/결함/주의 키워드 정밀 검사
                 const matchedBad = badWords.filter(w => reviewText.includes(w));
