@@ -20,21 +20,30 @@
 
 ---
 
-## 👥 Antigravity(안티그래비티)로 팀 협업하기
+## 👥 Antigravity(안티그래비티) 팀 협업 가이드
 
-다른 동료 개발자나 AI 에이전트와 함께 안티그래비티에서 작업하려면 아래 순서대로 진행하시면 됩니다.
+팀원들이 각자의 컴퓨터에서 Antigravity AI와 함께 프로젝트를 안전하게 협업하는 방법입니다.
 
+### 🔑 1. 사전 준비 (동료에게 GitHub 쓰기 권한 부여)
+동료가 작업한 코드를 깃허브에 올리려면 저장소 쓰기 권한이 필요합니다.
+1. 저장소 관리자가 [GitHub 저장소 설정](https://github.com/bebesupcs/bebesup-review/settings/access) 접속
+2. **Collaborators** 메뉴 ➔ **[Add people]** 클릭
+3. 동료의 GitHub 아이디/이메일 검색 후 초대장 발송 ➔ 동료가 이메일의 **Accept invitation** 수락 완료
+
+### 💻 2. 프로젝트 참여 및 시작 절차
 1. **저장소 복제(Clone)**:
    ```bash
    git clone https://github.com/bebesupcs/bebesup-review.git
    ```
 2. **Antigravity에서 폴더 열기**:
    * 복제한 `bebesup-review` 폴더를 Antigravity 작업 공간(Workspace)으로 엽니다.
-   * 저장소 루트에 포함된 [`AGENTS.md`](./AGENTS.md) 규칙에 따라 안티그래비티가 프로젝트의 핵심 규칙과 아키텍처를 자동으로 인식합니다.
-3. **AI 페어 프로그래밍 & 배포**:
-   * 아래의 [실무 프롬프트 모음]을 활용하여 AI와 대화하며 안전하게 기능을 수정/개선합니다.
-   * 기능 수정 후 GitHub `main`에 푸시하면, 핫패치를 통해 실시간으로 모든 사용자에게 배포됩니다.
-   * 복잡한 작업이나 팀 단위 협업 시 `/plan` 또는 `/teamwork-preview` 명령어를 활용하세요.
+   * 저장소 루트에 포함된 [`AGENTS.md`](./AGENTS.md) 규칙에 따라 안티그래비티가 프로젝트의 아키텍처와 비즈니스 안전 규칙을 자동으로 인식합니다.
+3. **작업 시작 전 필수 룰 (충돌 방지)**:
+   * 코드를 수정하기 전에는 항상 깃허브 최신 코드를 먼저 가져옵니다 (`git pull origin main`).
+4. **수정 후 배포 & 공유**:
+   * 작업 완료 후 `git push origin main`을 실행하면, 깃허브에 실시간 기록되며 전 직원의 브라우저에 핫패치로 즉시 배포됩니다.
+5. **동료의 수정 내역 확인**:
+   * 웹 브라우저에서 [GitHub 커밋 내역(Commits)](https://github.com/bebesupcs/bebesup-review/commits/main)에 접속하면 누가, 몇 시에, 어떤 코드 라인을 추가/삭제했는지 초록/빨강 diff로 실시간 확인할 수 있습니다.
 
 ---
 
@@ -44,11 +53,11 @@
 
 ---
 
-### 1️⃣ [처음 시작할 때] 프로젝트 상태 점검 및 온보딩
+### 1️⃣ [작업 시작 전] 동료 최신 작업 가져오기 & 상태 점검 (필수)
 ```text
-이 프로젝트는 베베숲 네이버 스마트스토어 리뷰 자동화 시스템이야.
-저장소의 AGENTS.md와 bebesup_extension/content_core.js를 검토하고,
-현재 버전과 핵심 비즈니스 안전 규칙(1~2점 제외, 3~4점 말줄임표 불만 은닉 차단, 부정어 필터링, 카테고리 분리, 핫패치 구조)을 숙지한 뒤 준비 완료 상태를 알려줘.
+작업을 시작하기 전에 동료가 올린 최신 코드가 있는지 깃허브에서 가져와줘 (git pull origin main).
+만약 변경된 내역이 있다면 어떤 파일의 어떤 내용이 바뀌었는지 요약해 주고,
+저장소의 AGENTS.md와 bebesup_extension/content_core.js를 검토해서 현재 버전과 비즈니스 안전 규칙 준비 완료 상태를 알려줘.
 ```
 
 ---
@@ -93,6 +102,14 @@ node -c 문법 검사 후 버전을 올리고 git push origin main으로 배포�
 수정한 코드가 정상인지 node -c로 문법 검사를 실행하고,
 버전을 한 단계 올려서 manifest.json과 content_core.js 배지에 반영한 뒤,
 D:\bebesup_extension 로컬 폴더 동기화 및 git add / commit / push origin main까지 안전하게 배포해줘.
+```
+
+---
+
+### 6️⃣ [수정 내역 확인 & 요약] 최근 변경 기록 조회
+```text
+최근 깃허브 커밋 기록(git log)을 확인해서,
+최근에 동료나 내가 어떤 작업을 수정하고 커밋했는지 변경 내역과 요약을 알기 쉽게 정리해줘.
 ```
 
 ---

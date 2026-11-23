@@ -45,6 +45,11 @@
 
 다른 팀원이나 AI 에이전트가 코드를 수정할 때는 다음 순서를 반드시 따릅니다:
 
+0. **최신 코드 동기화 (충돌 방지)**:
+   * 작업 시작 전 항상 깃허브 최신 코드를 가져옵니다:
+     ```bash
+     git pull origin main
+     ```
 1. **코드 수정**:
    * 주요 로직 수정은 [`bebesup_extension/content_core.js`](./bebesup_extension/content_core.js)에서 진행합니다.
    * 패치 버전(예: `v2.8.5` ➔ `v2.8.6`)을 `content_core.js` 상단 배지와 `manifest.json`에서 동일하게 올립니다.
