@@ -61,12 +61,41 @@
         }
     };
 
-    // 1. 실행 로직: 우선 로컬 캐시가 있으면 즉시 실행 (체감 속도 0초)
-    const cachedCode = localStorage.getItem(CACHE_KEY);
-    let isExecuted = false;
+    // 1. 실행 로직: 로컬 번들 파일과 캐시 코드 중 최신 버전 우선 실행
+    let localCode = null;
+    try {
+        const localRes = await fetch(chrome.runtime.getURL("content_core.js"));
+        if (localRes.ok) localCode = await localRes.text();
+    } catch(e) {}
 
-    if (cachedCode && cachedCode.length > 5000) {
-        isExecuted = executeScriptCode(cachedCode);
+    const cachedCode = localStorage.getItem(CACHE_KEY);
+
+    function parseVer(code) {
+        if (!code) return [0, 0, 0];
+        const m = code.match(/v(\d+)\.(\d+)\.(\d+)/);
+        return m ? [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)] : [0, 0, 0];
+    }
+    function isNewer(verA, verB) {
+        for (let i = 0; i < 3; i++) {
+            if ((verA[i] || 0) > (verB[i] || 0)) return true;
+            if ((verA[i] || 0) < (verB[i] || 0)) return false;
+        }
+        return false;
+    }
+
+    const localVer = parseVer(localCode);
+    const cachedVer = parseVer(cachedCode);
+
+    let codeToRun = localCode;
+    if (cachedCode && isNewer(cachedVer, localVer)) {
+        codeToRun = cachedCode;
+    } else if (localCode) {
+        localStorage.setItem(CACHE_KEY, localCode);
+    }
+
+    let isExecuted = false;
+    if (codeToRun && codeToRun.length > 5000) {
+        isExecuted = executeScriptCode(codeToRun);
     }
 
     // 2. 백그라운드에서 GitHub 최신 코드가 있는지 확인
