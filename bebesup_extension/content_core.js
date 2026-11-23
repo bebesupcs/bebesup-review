@@ -135,7 +135,7 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
                 ${isAutoLooping ? "자동 진행 중" : "베베숲 AI"}
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.4 (세제/스킨케어 상단검색 연동 & React/Angular 전방위 감지)
+                v2.8.5 (세제/스킨케어 카테고리 선별 & 변수 스코프 완전 안정화)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -1585,19 +1585,24 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         return false;
     }
 
+    // 카테고리 표시명 변환 헬퍼 함수
+    function getCategoryLabel(cat) {
+        if (cat === "SKINCARE") return "스킨케어";
+        if (cat === "DETERGENT") return "세제";
+        return "전라인 공통(물티슈)";
+    }
+
     // 단일 배치(50개) 처리 함수
     async function executeSingleBatch(category, mode) {
         const isTestMode = (mode === "TEST");
-        let catLabel = "전라인 공통(물티슈)";
+        const catLabel = getCategoryLabel(category);
         // 🌿 물티슈/전라인 전용 정성 공식 답글
         let replyMsg = "안녕하세요. 베베숲입니다. 소중한 리뷰 감사드립니다.\n언제나 아기 피부에 닿는 만큼 더욱 순하고 도톰하게 정성을 담겠습니다.\n궁금한 점이 생기시면 언제든 편하게 말씀해 주세요😊\n앞으로도 만족스러운 경험을 드릴 수 있도록 노력하겠습니다💚";
 
         if (category === "SKINCARE") {
-            catLabel = "스킨케어";
             // 💧 스킨케어 전용 정성 공식 답글
             replyMsg = "안녕하세요. 베베숲입니다. 소중한 리뷰 감사드립니다.\n우리 아이 피부를 촉촉하고 순하게 지켜줄 수 있도록 늘 엄선된 성분으로 보답하겠습니다.\n궁금한 점이 생기시면 언제든 편하게 말씀해 주세요😊\n앞으로도 만족스러운 경험을 드릴 수 있도록 노력하겠습니다💚";
         } else if (category === "DETERGENT") {
-            catLabel = "세제";
             // 🫧 세제/생활용품 전용 정성 공식 답글
             replyMsg = "안녕하세요. 베베숲입니다. 소중한 리뷰 감사드립니다.\n온 가족 안심 세탁을 위해 깨끗한 세정력과 순한 안심 성분으로 보답하겠습니다.\n궁금한 점이 생기시면 언제든 편하게 말씀해 주세요😊\n앞으로도 만족스러운 경험을 드릴 수 있도록 노력하겠습니다💚";
         }
@@ -1987,6 +1992,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
     // 전자동 연속 실행 루프 (페이지 전체 새로고침 없이 in-page [검색]을 통해 50개씩 논스톱 연속 처리)
     async function runAutoLoop(category) {
+        const catLabel = getCategoryLabel(category);
         sessionStorage.setItem("bebesup_auto_loop", "true");
         sessionStorage.setItem("bebesup_target_cat", category);
 
@@ -2119,6 +2125,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
             const category = catSelect.value;
             const mode = modeSelect.value;
+            const catLabel = getCategoryLabel(category);
 
             // 시각적 피드백 즉시 제공!
             const originalBtnText = runBtn.innerText;
