@@ -60,7 +60,7 @@
                 ${isAutoLooping ? "자동 진행 중" : "베베숲 AI"}
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.2 (F12 안전 시뮬레이션 모드 탑재)
+                v2.8.3 (스킨케어/세제 카테고리 & 파손/불만글 정밀 필터링 강화)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -713,17 +713,300 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
     // 2. HTML Table 컬럼 인덱스 동적 해석
     function resolveTableColIndexes(tableEl) {
-        let scoreColIdx = -1, prodColIdx = -1, contentColIdx = -1, replyColIdx = -1;
-        if (!tableEl) return { scoreColIdx, prodColIdx, contentColIdx, replyColIdx };
+        let scoreColIdx = -1, prodColIdx = -1, contentColIdx = -1, replyColIdx = -1, reviewNoColIdx = -1;
+        if (!tableEl) return { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx };
         const ths = Array.from(tableEl.querySelectorAll("thead th, thead td"));
         ths.forEach((th, idx) => {
             const h = (th.innerText || th.textContent || "").replace(/\s+/g, "");
             if (scoreColIdx === -1 && (h.includes("평점") || h.includes("별점"))) scoreColIdx = idx;
-            if (prodColIdx === -1 && (h.includes("상품명") || h.includes("주문상품"))) prodColIdx = idx;
+            if (prodColIdx === -1 && (h.includes("상품명") || h.includes("주문상품") || h.includes("상품정보") || h.includes("구매상품") || h.includes("옵션정보") || h === "상품")) prodColIdx = idx;
             if (contentColIdx === -1 && (h.includes("리뷰내용") || h.includes("내용"))) contentColIdx = idx;
             if (replyColIdx === -1 && (h.includes("답글") || h.includes("답변"))) replyColIdx = idx;
+            if (reviewNoColIdx === -1 && (h.includes("리뷰글번호") || h.includes("글번호") || h.includes("리뷰번호") || h.includes("번호"))) reviewNoColIdx = idx;
         });
-        return { scoreColIdx, prodColIdx, contentColIdx, replyColIdx };
+        return { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx };
+    }
+
+    // AngularJS Scope에서 단일 리뷰 데이터 객체 탐색
+    function findReviewObjectFromScope(scope, targetReviewNo = null, targetIndex = -1) {
+        if (!scope) return null;
+
+        // 1) scope 자체의 직접 속성 검사
+        const propNames = ['item', 'row', 'review', 'data', 'r', 'article', 'reviewItem', 'record', 'orderReview'];
+        for (const p of propNames) {
+            const obj = scope[p];
+            if (obj && typeof obj === 'object') {
+                if (obj.reviewContent || obj.productName || obj.channelProductName || obj.reviewScore || obj.reviewNo || obj.reviewScorePoint) {
+                    if (!targetReviewNo || String(obj.reviewNo || obj.id || obj.reviewId || "").includes(targetReviewNo)) {
+                        return obj;
+                    }
+                }
+            }
+        }
+
+        // 2) scope의 모든 사용자 정의 속성 검사
+        for (const key of Object.keys(scope)) {
+            if (key.startsWith('$')) continue;
+            const val = scope[key];
+            if (val && typeof val === 'object' && !Array.isArray(val)) {
+                if (val.reviewContent || val.productName || val.channelProductName || val.reviewScore || val.reviewNo || val.reviewScorePoint) {
+                    if (!targetReviewNo || String(val.reviewNo || val.id || val.reviewId || "").includes(targetReviewNo)) {
+                        return val;
+                    }
+                }
+            }
+        }
+
+        // 3) 상위 계층 scope 배열(vm.reviewList 등)에서 매칭
+        const scopesToCheck = [scope, scope.vm, scope.$parent, scope.$parent?.vm, scope.$parent?.$parent, scope.$parent?.$parent?.vm].filter(Boolean);
+        const listNames = ['reviewList', 'items', 'list', 'reviews', 'rows', 'data', 'content', 'reviewDataList'];
+
+        for (const s of scopesToCheck) {
+            for (const ln of listNames) {
+                const arr = s[ln];
+                if (Array.isArray(arr) && arr.length > 0) {
+                    if (targetReviewNo) {
+                        const found = arr.find(x => x && String(x.reviewNo || x.id || x.reviewId || x.productOrderReviewNo || "") === String(targetReviewNo));
+                        if (found) return found;
+                    }
+                    const idx = typeof scope.$index === 'number' ? scope.$index : targetIndex;
+                    if (idx >= 0 && arr[idx]) {
+                        return arr[idx];
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    // 스마트스토어 화면 전역의 AngularJS Controller에서 로드된 리뷰 원본 배열 수집
+    function getGlobalReviewList(preferredDoc = document) {
+        if (!window.angular) return [];
+        try {
+            const docs = [preferredDoc, document];
+            try {
+                const iframes = document.querySelectorAll("iframe, frame");
+                for (let i = 0; i < iframes.length; i++) {
+                    const fDoc = iframes[i].contentDocument || iframes[i].contentWindow?.document;
+                    if (fDoc && !docs.includes(fDoc)) docs.push(fDoc);
+                }
+            } catch(e) {}
+
+            const listNames = ['reviewList', 'items', 'list', 'reviews', 'rows', 'data', 'content', 'reviewDataList'];
+
+            for (const doc of docs) {
+                const candidateEls = [
+                    doc.querySelector(".seller-content"),
+                    doc.querySelector("#content"),
+                    doc.querySelector("div[ui-view]"),
+                    doc.querySelector("div[ng-controller]"),
+                    doc.querySelector("table"),
+                    doc.body
+                ].filter(Boolean);
+
+                for (const el of candidateEls) {
+                    const scope = window.angular.element(el).scope();
+                    if (!scope) continue;
+
+                    const targets = [scope, scope.vm, scope.$parent, scope.$parent?.vm].filter(Boolean);
+                    for (const t of targets) {
+                        for (const ln of listNames) {
+                            const arr = t[ln];
+                            if (Array.isArray(arr) && arr.length > 0) {
+                                const first = arr[0];
+                                if (first && typeof first === 'object' && (first.reviewNo || first.reviewId || first.reviewContent || first.productName || first.channelProductName)) {
+                                    return arr;
+                                }
+                            }
+                        }
+                        for (const key of Object.keys(t)) {
+                            if (key.startsWith('$')) continue;
+                            const val = t[key];
+                            if (Array.isArray(val) && val.length > 0) {
+                                const first = val[0];
+                                if (first && typeof first === 'object' && (first.reviewNo || first.reviewId || first.reviewContent || first.productName || first.channelProductName)) {
+                                    return val;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch(e) {}
+        return [];
+    }
+
+    // 스마트스토어 HTML Table의 1개 행(tr)에 대한 전방위 정밀 데이터 추출기
+    function extractSmartStoreRowData(tr, rowIndex, colIndexes, globalList = []) {
+        const { scoreColIdx = -1, prodColIdx = -1, contentColIdx = -1, replyColIdx = -1, reviewNoColIdx = -1 } = colIndexes || {};
+        const tds = Array.from(tr.querySelectorAll("td"));
+        const rowText = (tr.innerText || "").replace(/\s+/g, " ");
+
+        // 1. 리뷰글번호(reviewNo) 정밀 추출
+        let reviewNo = "";
+        if (reviewNoColIdx >= 0 && tds[reviewNoColIdx]) {
+            reviewNo = (tds[reviewNoColIdx].innerText || "").trim().replace(/\D/g, "");
+        }
+        if (!reviewNo) {
+            const idMatch = rowText.match(/\b5\d{9}\b/) || rowText.match(/\b\d{9,11}\b/);
+            if (idMatch) reviewNo = idMatch[0];
+        }
+        if (!reviewNo) {
+            reviewNo = tr.getAttribute("data-id") || tr.getAttribute("data-review-id") || tr.getAttribute("row-id") || tr.getAttribute("id") || "";
+        }
+
+        // 2. AngularJS Scope 및 전역 목록에서 원본 API 데이터 객체(rawItem) 탐색
+        let rawItem = null;
+
+        if (window.angular) {
+            try {
+                const elsToTry = [tr, ...tr.querySelectorAll("a, td, span, button, input")];
+                for (const el of elsToTry) {
+                    const s = window.angular.element(el).scope();
+                    if (s) {
+                        rawItem = findReviewObjectFromScope(s, reviewNo, rowIndex);
+                        if (rawItem) break;
+                    }
+                }
+            } catch(e) {}
+        }
+
+        if (!rawItem && Array.isArray(globalList) && globalList.length > 0) {
+            if (reviewNo) {
+                rawItem = globalList.find(x => x && String(x.reviewNo || x.id || x.reviewId || x.productOrderReviewNo || "") === String(reviewNo));
+            }
+            if (!rawItem && rowIndex >= 0 && globalList[rowIndex]) {
+                rawItem = globalList[rowIndex];
+            }
+        }
+
+        // 3. 상품명(prodName) 추출
+        let prodName = "";
+        if (rawItem) {
+            const prodFields = [
+                'productName', 'channelProductName', 'productTitle', 'channelProductTitle',
+                'channelProductDisplaySummary', 'channelItemName', 'itemName', 'itemTitle',
+                'productDisplaySummary'
+            ];
+            for (const f of prodFields) {
+                if (rawItem[f] && typeof rawItem[f] === 'string' && rawItem[f].trim()) {
+                    prodName = rawItem[f].trim();
+                    break;
+                }
+            }
+            if (!prodName && rawItem.originProduct?.productName) prodName = String(rawItem.originProduct.productName).trim();
+            if (!prodName && rawItem.productOrder?.productName) prodName = String(rawItem.productOrder.productName).trim();
+        }
+        if (!prodName && prodColIdx >= 0 && tds[prodColIdx]) {
+            const cell = tds[prodColIdx];
+            prodName = cell.getAttribute("title") || cell.querySelector("[title]")?.getAttribute("title") || (cell.innerText || "").trim();
+        }
+        if (!prodName) {
+            const prodEl = tr.querySelector("a[href*='product'], a[href*='item'], [class*='product'], [class*='item']");
+            if (prodEl) {
+                prodName = (prodEl.getAttribute("title") || prodEl.innerText || "").trim();
+            }
+        }
+
+        // 4. 리뷰 본문(reviewText) 추출 (말줄임표 없는 완전한 원문 수집)
+        let reviewText = "";
+        if (rawItem) {
+            const contentFields = ['reviewContent', 'content', 'reviewBody', 'reviewText', 'contents', 'comment', 'detailContent', 'productReviewContent'];
+            const candidates = [];
+            for (const f of contentFields) {
+                if (rawItem[f] && typeof rawItem[f] === 'string' && rawItem[f].trim()) {
+                    candidates.push(rawItem[f].trim());
+                }
+            }
+            if (rawItem.review && typeof rawItem.review === 'object') {
+                for (const f of contentFields) {
+                    if (rawItem.review[f] && typeof rawItem.review[f] === 'string') candidates.push(rawItem.review[f].trim());
+                }
+            }
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => b.length - a.length);
+                reviewText = candidates[0];
+            }
+        }
+
+        // DOM 속성(uib-tooltip, tooltip, title, data-content 등)에서 온전한 본문 수집
+        if (!reviewText || reviewText.endsWith("...") || reviewText.endsWith("…")) {
+            let bestTooltip = "";
+            const allDescendants = Array.from(tr.querySelectorAll("*"));
+            for (const el of allDescendants) {
+                for (const attr of ["uib-tooltip", "tooltip", "title", "data-original-title", "data-content", "data-text", "data-tooltip"]) {
+                    const val = el.getAttribute?.(attr);
+                    if (val && typeof val === 'string' && val.trim().length > bestTooltip.length) {
+                        bestTooltip = val.trim();
+                    }
+                }
+            }
+            if (bestTooltip && (!reviewText || bestTooltip.length > reviewText.length)) {
+                reviewText = bestTooltip;
+            }
+        }
+
+        if (!reviewText) {
+            if (contentColIdx >= 0 && tds[contentColIdx]) {
+                reviewText = (tds[contentColIdx].innerText || "").trim();
+            } else {
+                reviewText = rowText;
+            }
+        }
+
+        // 5. 평점(score) 추출
+        let score = 5;
+        if (rawItem) {
+            const scoreFields = ['reviewScorePoint', 'evaluationPoint', 'reviewScore', 'starScore', 'score', 'point', 'reviewPoint', 'rating', 'starRating'];
+            for (const f of scoreFields) {
+                if (rawItem[f] !== undefined && rawItem[f] !== null && rawItem[f] !== '') {
+                    const n = Number(rawItem[f]);
+                    if (!isNaN(n) && n >= 1 && n <= 5) {
+                        score = n;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!rawItem || score === 5) {
+            const domScore = extractReviewScore(null, tr, null, scoreColIdx, null, null);
+            if (domScore >= 1 && domScore <= 5) score = domScore;
+        }
+
+        // 6. 이미 답글완료 여부(isAnswered) 판별
+        let isAnswered = false;
+        if (rawItem) {
+            if (rawItem.answered === true || rawItem.isAnswered === true || rawItem.hasReply === true || rawItem.replyRegistrationDate) {
+                isAnswered = true;
+            }
+        }
+        if (!isAnswered) {
+            const hasAnsweredBtn = Array.from(tr.querySelectorAll("button, a")).some(btn => {
+                const bTxt = (btn.innerText || btn.textContent || "").trim();
+                return bTxt.includes("답글보기") || bTxt.includes("답글수정") || bTxt.includes("답변보기");
+            });
+            if (hasAnsweredBtn) isAnswered = true;
+        }
+        if (!isAnswered && replyColIdx >= 0 && tds[replyColIdx]) {
+            const rTxt = (tds[replyColIdx].innerText || "").trim();
+            if (rTxt !== "N" && rTxt !== "" && (!rTxt.startsWith("N") || rTxt.includes("Y") || rTxt.includes("완료"))) {
+                isAnswered = true;
+            }
+        }
+        if (!isAnswered) {
+            isAnswered = rowText.includes("답글보기") || rowText.includes("답글수정") || rowText.includes("답글완료") || rowText.includes("등록완료") || rowText.includes("답변완료");
+        }
+
+        return {
+            reviewNo,
+            prodName,
+            reviewText,
+            score,
+            isAnswered,
+            rawItem,
+            rowText
+        };
     }
 
     // 3. 평점(1~5점) 100% 정밀 추출기 (ag-Grid API, node.data, DOM 셀 전방위 파싱)
@@ -940,30 +1223,32 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         "곰팡이", "이물질", "이물", "벌레", "악취", "냄새 심", "이상한 냄새", "썩", "변질", "침전",
         "더러", "오염", "얼룩", "재고", "먼지", "찝찝", "찜찜", "소송", "고발", "신고",
 
-        // 🟡 2. 중고/반품의심/개봉/포장 불량/변색 (DEFECT & PACKAGING)
-        "반품된", "반품된걸", "반품된거", "반품 건", "반품건", "반품 제품", "반품제품",
+        // 🟡 2. 중고/반품의심/개봉/포장 불량/변색/박스 파손 (DEFECT & PACKAGING)
+        "반품된", "반품된걸", "반품된거", "반품 건", "반품건", "반품 제품", "반품제품", "반품",
         "새거가 아닌", "새것이 아닌", "새상품이 아닌", "새제품이 아닌", "새거 아니", "새것 아니",
         "중고", "누가 쓰던", "쓰던 거", "쓰던거", "쓰던 것", "개봉된", "개봉 흔적", "뜯어진", "뜯겨", "재포장",
         "변색", "하얗게 변", "누렇게", "색이 변", "포장지", "포장 불량", "포장상태", "포장 상태", "포장 엉망", "포장이 엉망",
-        "지워지지", "안 지워", "안지워", "주의부탁", "주의 부탁", "주의해주", "주의해 주", "배송에 이런",
+        "깨끗하지 못", "깨끗하지 않", "지워지지", "안 지워", "안지워", "주의부탁", "주의 부탁", "주의해주", "주의해 주", "배송에 이런",
+        "박스 파손", "박스파손", "박스 찢", "박스가 찢", "박스가 터", "박스 터", "박스 찌그", "박스가 찌그", "박스 구겨", "박스가 엉망", "박스 뜯", "박스 개봉",
+        "외박스 파손", "상자 파손", "상자 터", "상자 찌그", "테이프 뜯",
 
         // 🟡 3. 제품 하자/캡/원단/재단/실밥/수분/제조일 (DEFECT & QUALITY)
         "헐거", "열려있", "열려서", "열려", "안닫", "안 닫", "뚜껑 헐", "뚜껑 부러", "뚜껑 깨", "뚜껑 안",
         "캡이 헐", "캡 헐", "캡 열", "캡 안", "캡 부러", "캡 깨", "캡 불량", "스티커",
         "마름", "말라있", "말라서", "말라", "마르", "물기 부족", "물기 없", "물기 마", "물기 적", "수분 부족", "수분 없", "수분이 좀", "수분 아쉽", "건조",
         "뒤집어서", "뒤집어 쓰", "뒤집어쓰",
-        "터져", "터짐", "찌그러", "박스 파손", "박스파손", "박스 찢", "찢어", "찢김", "구멍", "불량", "파손",
+        "터져", "터짐", "찌그러", "찢어", "찢김", "구멍", "불량", "파손",
         "새서", "새어", "흘러", "샜", "흘러나",
-        "재단", "실처럼", "실밥", "올 풀림", "올풀림", "마감 불량", "마감 아쉽", "마감이 아쉽", "깔끔하지 않",
+        "재단", "재단 불량", "재단이 아쉽", "실처럼", "실밥", "올 풀림", "올풀림", "마감 불량", "마감 아쉽", "마감이 아쉽", "깔끔하지 않", "원단 불량", "원단이 깔끔",
         "제조일", "제조일자", "생산일자", "제조년월", "오래된", "유통기한 임박", "유통기한",
         "너무 작", "사이즈 작", "사이즈 아쉽", "크기 작", "너무 얇", "두께 아쉽", "두께 얇", "얇아", "얇네", "비쳐", "비침",
         "거칠", "까칠", "끈적", "딸려나",
 
         // 🟡 4. 구매 만류 / 비추천 / 후회 / 교환·환불 희망 (RECOMMENDATION & CS)
-        "패스 하", "패스하", "패스합", "패스요", "패스 권", "패스 추천", "패스하세요", "패스 하세요",
+        "패스 하", "패스하", "패스합", "패스요", "패스 권", "패스 추천", "패스하세요", "패스 하세요", "패스", "그냥 패스",
         "두꺼운 걸 찾", "두꺼운 거 찾", "두꺼운거 찾", "두꺼운걸 찾",
         "사지 마", "사지마", "사지마세요", "사지 마세요", "구매하지 마", "구매 비추", "비추", "비추천",
-        "살 걸", "살걸", "살 걸 그", "살걸그", "괜히 샀", "괜히 삿", "후회", "실망", "돈 아깝", "돈아깝", "돈 버렸", "돈버렸",
+        "살 걸", "살걸", "살 걸 그", "살걸그", "괜히 샀", "괜히 삿", "후회", "차라리", "실망", "돈 아깝", "돈아깝", "돈 버렸", "돈버렸",
         "교환하고 싶", "교환 원", "교환 요청", "교환 부탁", "환불하고 싶", "환불 원", "환불 요청", "환불 부탁",
         "뜯지만 않았다면", "개봉만 안", "뜯지만 안",
 
@@ -1013,17 +1298,20 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 });
             });
         } else if (reviewInfo.rows.length > 0) {
+            const globalReviewList = getGlobalReviewList(reviewInfo.doc);
+            const { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx } = reviewInfo.table ? resolveTableColIndexes(reviewInfo.table) : {};
             reviewInfo.rows.forEach((tr, idx) => {
-                const score = extractReviewScore(null, tr, null, scoreColIdx, null, null);
-                const prodName = extractProductName(null, tr, null, prodColIdx, null, null) || "베베숲 제품";
-                const text = extractReviewContent(null, tr, null, contentColIdx, null, null);
+                const rowData = extractSmartStoreRowData(tr, idx, { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx }, globalReviewList);
+                const score = rowData.score;
+                const prodName = rowData.prodName || "베베숲 제품";
+                const text = rowData.reviewText;
 
                 const idMatch = text.match(/\b\d{9,11}\b/);
-                const dateMatch = text.match(/\d{4}\.\d{2}\.\d{2}/);
+                const dateMatch = (tr.innerText || "").match(/\d{4}\.\d{2}\.\d{2}/);
 
                 reviews.push({
-                    id: idMatch ? idMatch[0] : `REV-${idx + 1}`,
-                    author: text.match(/[a-zA-Z0-9_*]{3,12}/)?.[0] || "-",
+                    id: rowData.reviewNo || (idMatch ? idMatch[0] : `REV-${idx + 1}`),
+                    author: (tr.innerText || "").match(/[a-zA-Z0-9_*]{3,12}/)?.[0] || "-",
                     date: dateMatch ? dateMatch[0] : "-",
                     prodName: prodName,
                     score: score,
@@ -1281,63 +1569,52 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             });
         } else if (reviewInfo.rows.length > 0) {
             // [엔진 2] 스마트스토어 리뷰 HTML Table 직접 선택
-            for (const tr of reviewInfo.rows) {
+            const globalReviewList = getGlobalReviewList(reviewInfo.doc);
+            const { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx } = reviewInfo.table ? resolveTableColIndexes(reviewInfo.table) : {};
+
+            if (isTestMode && globalReviewList.length > 0) {
+                console.log(`%c[AngularJS 모델 연동 성공] 스마트스토어 내부 리뷰 원본 데이터 ${globalReviewList.length}건 동기화 완료`, "color: #0288d1; font-weight: bold;");
+            }
+
+            for (let rowIndex = 0; rowIndex < reviewInfo.rows.length; rowIndex++) {
                 if (selectedCount >= BATCH_TARGET_LIMIT) break;
-                const sig = getRowSignature(tr);
+                const tr = reviewInfo.rows[rowIndex];
+
+                // 행별 원본 데이터(상품명, 본문원문, 평점, 답글여부) 전방위 정밀 추출
+                const rowData = extractSmartStoreRowData(tr, rowIndex, { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx }, globalReviewList);
+                const { reviewNo, prodName, reviewText, score, isAnswered, rowText } = rowData;
+
+                const sig = reviewNo || getRowSignature(tr);
                 if (sig && processedSignatures.has(sig)) {
                     skippedAnswered++;
                     continue;
                 }
 
-                const rowText = (tr.innerText || "").replace(/\s+/g, " ");
-
                 // 1. 이미 답글완료 건 제외
-                const tds = Array.from(tr.querySelectorAll("td"));
-                const hasAnsweredBtn = Array.from(tr.querySelectorAll("button, a")).some(btn => {
-                    const bTxt = (btn.innerText || btn.textContent || "").trim();
-                    return bTxt.includes("답글보기") || bTxt.includes("답글수정") || bTxt.includes("답변보기");
-                });
-
-                let isAlreadyAnswered = hasAnsweredBtn;
-                if (!isAlreadyAnswered && replyColIdx >= 0 && tds[replyColIdx]) {
-                    const rTxt = (tds[replyColIdx].innerText || "").trim();
-                    if (rTxt !== "N" && rTxt !== "" && (!rTxt.startsWith("N") || rTxt.includes("Y") || rTxt.includes("완료"))) {
-                        isAlreadyAnswered = true;
-                    }
-                }
-                if (!isAlreadyAnswered) {
-                    isAlreadyAnswered = rowText.includes("답글보기") || rowText.includes("답글수정") || rowText.includes("답글완료") || rowText.includes("등록완료") || rowText.includes("답변완료");
-                }
-
-                if (isAlreadyAnswered) {
-                    if (isTestMode) console.log(`%c[스킵 - 이미답변] ${rowText.slice(0, 30)}...`, "color: #888;");
+                if (isAnswered) {
+                    if (isTestMode) console.log(`%c[스킵 - 이미답변] ${reviewText.slice(0, 30)}...`, "color: #888;");
                     skippedAnswered++;
                     continue;
                 }
 
-                // 2. 평점(1~5점) 정밀 추출 및 엄격 차단
-                const score = extractReviewScore(null, tr, null, scoreColIdx, null, null);
-
-                // 🚨 1~2점 저평점 리뷰는 100% 무조건 제외 (절대 자동답글 금지)
+                // 2. 🚨 1~2점 저평점 리뷰는 100% 무조건 제외 (절대 자동답글 금지)
                 if (score <= 2) {
                     if (isTestMode) console.log(`%c[스킵 - 저평점 ★${score}] ${reviewText.slice(0, 30)}...`, "color: #e53935; font-weight: bold;");
                     skippedBad++;
                     continue;
                 }
 
-                // 3. 리뷰 본문 정밀 추출
-                const reviewText = extractReviewContent(null, tr, null, contentColIdx, null, null) || rowText;
-
-                // 🚨 은닉 불만 방지: 본문이 말줄임표(...)로 끝나고 잘려있는 3점 리뷰는 뒷부분 불만 위험이 있으므로 안전 제외
+                // 3. 🚨 은닉 불만 방지: 본문이 말줄임표(...)로 끝나고 잘려있는 3~4점 리뷰는 뒷부분 불만 위험이 있으므로 안전 제외
                 const isTruncated = reviewText.endsWith("...") || reviewText.endsWith("…");
-                if (isTruncated && score <= 3) {
-                    if (isTestMode) console.log(`%c[스킵 - 3점 말줄임표(...) 불만 은닉주의] ${reviewText.slice(0, 30)}...`, "color: #f57c00;");
+                if (isTruncated && score <= 4) {
+                    if (isTestMode) console.log(`%c[스킵 - ★${score} 말줄임표(...) 불만 은닉주의] ${reviewText.slice(0, 30)}...`, "color: #f57c00; font-weight: bold;");
                     skippedBad++;
                     continue;
                 }
 
                 // 4. 부정어/결함/주의 키워드 정밀 검사
-                const matchedBad = badWords.filter(w => reviewText.includes(w) || rowText.includes(w));
+                const checkTarget = reviewText + " " + rowText + " " + prodName;
+                const matchedBad = badWords.filter(w => checkTarget.includes(w));
 
                 // 🚨 3점 리뷰는 엄격 검사: 불만/애매/초단문 표현이 1개라도 있으면 100% 제외!
                 if (score === 3) {
@@ -1349,33 +1626,32 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 } else {
                     // 4~5점 리뷰: 불만 키워드 감지 시 즉시 제외
                     if (matchedBad.length > 0) {
-                        if (isTestMode) console.log(`%c[스킵 - 불만/결함 키워드: "${matchedBad.join(', ')}"] ★${score} | ${reviewText.slice(0, 30)}...`, "color: #d32f2f; font-weight: bold;");
+                        if (isTestMode) console.log(`%c[스킵 - 불만/결함 키워드: "${matchedBad.join(', ')}"] ★${score} | 상품: ${prodName || '미지정'} | ${reviewText.slice(0, 30)}...`, "color: #d32f2f; font-weight: bold;");
                         skippedBad++;
                         continue;
                     }
                 }
 
                 // 5. 상품명 정밀 추출 및 카테고리 엄격 분리
-                const prodName = extractProductName(null, tr, null, prodColIdx, null, null) || rowText;
-                const isSkincare = skincareKeywords.some(k => prodName.includes(k) || rowText.includes(k));
-                const isDetergent = detergentKeywords.some(k => prodName.includes(k) || rowText.includes(k));
+                const isSkincare = skincareKeywords.some(k => prodName.includes(k) || rowText.includes(k) || reviewText.includes(k));
+                const isDetergent = detergentKeywords.some(k => prodName.includes(k) || rowText.includes(k) || reviewText.includes(k));
 
                 if (category === "SKINCARE") {
                     if (!isSkincare) {
-                        if (isTestMode) console.log(`%c[스킵 - 스킨케어 상품 아님] 상품: ${prodName.slice(0, 20)}`, "color: #7b1fa2;");
+                        if (isTestMode) console.log(`%c[스킵 - 스킨케어 상품 아님] 상품: "${prodName || '알수없음'}"`, "color: #7b1fa2;");
                         skippedCategory++;
                         continue;
                     }
                 } else if (category === "DETERGENT") {
                     if (!isDetergent) {
-                        if (isTestMode) console.log(`%c[스킵 - 세제 상품 아님] 상품: ${prodName.slice(0, 20)}`, "color: #7b1fa2;");
+                        if (isTestMode) console.log(`%c[스킵 - 세제 상품 아님] 상품: "${prodName || '알수없음'}"`, "color: #7b1fa2;");
                         skippedCategory++;
                         continue;
                     }
                 } else if (category === "WIPES") {
                     // 물티슈(전라인): 스킨케어나 세제 상품은 100% 배제!
                     if (isSkincare || isDetergent) {
-                        if (isTestMode) console.log(`%c[스킵 - 물티슈 외 타제품] 상품: ${prodName.slice(0, 20)}`, "color: #7b1fa2;");
+                        if (isTestMode) console.log(`%c[스킵 - 물티슈 외 타제품(스킨케어/세제)] 상품: "${prodName || '알수없음'}"`, "color: #7b1fa2;");
                         skippedCategory++;
                         continue;
                     }
@@ -1395,7 +1671,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     if (sig) currentBatchSigs.push(sig);
                     selectedCount++;
                     if (isTestMode) {
-                        console.log(`%c✅ [통과 #${selectedCount}] 체크박스 선택됨 | ★${score} | 상품: ${prodName.slice(0, 20)} | 내용: "${reviewText.slice(0, 30)}..."`, "color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 4px;");
+                        const displayProd = prodName ? prodName.slice(0, 25) : "물티슈(기본)";
+                        console.log(`%c✅ [통과 #${selectedCount}] 체크박스 선택됨 | ★${score} | 상품: ${displayProd} | 내용: "${reviewText.slice(0, 30)}..."`, "color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 4px;");
                     }
                 }
             }
