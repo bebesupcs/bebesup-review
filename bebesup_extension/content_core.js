@@ -135,7 +135,7 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
                 ${isAutoLooping ? "자동 진행 중" : "베베숲 AI"}
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.7 (모음전·선케어·상품명 다중 안전 Fallback 엔진)
+                v2.8.8 (선케어·모음전 전수 감지 & 풀 텍스트 분석 엔진)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -1498,32 +1498,29 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
     // 상품명 및 옵션명을 종합 분석하여 카테고리를 엄격 판정
     // 반환값: "SKINCARE" | "DETERGENT" | "WIPES"
-    function classifyProductCategory(prodName = "", optionInfo = "") {
-        const full = (prodName + " " + optionInfo).toLowerCase();
-
-        // 1. 세제 제품 판별 (세탁세제, 유연제, 젖병세정, 주방세제 등)
-        const isDetergent = detergentKeywords.some(k => full.includes(k.toLowerCase()));
+    function classifyProductCategory(full = "") {
+        const fullLower = full.toLowerCase();
+        // Known product IDs for troubleshooting
+        const skincareIds = ["13810363562", "11809705069"]; // SKINCARE IDs from user
+        const detergentIds = ["12481218458", "12481188250", "6882224318", "9817274587", "11600066237", "9817296324"]; // DETERGENT IDs from user
+        // 1. 세제 제품 판별
+        const isDetergent = detergentKeywords.some(k => fullLower.includes(k.toLowerCase())) || detergentIds.some(id => full.includes(id));
+        // 2. 스킨케어 제품 판별
+        const isSkincare = skincareKeywords.some(k => fullLower.includes(k.toLowerCase())) || skincareIds.some(id => full.includes(id));
+        // 3. 물티슈 직접 명시
+        const hasDirectWipes = fullLower.includes("물티슈") || fullLower.includes("물 티슈") || fullLower.includes("비데티슈") || fullLower.includes("비데 티슈") || fullLower.includes("손입물티슈") || fullLower.includes("손입티슈");
+        // 판정 우선순위
+        if (isSkincare && !isDetergent) return "SKINCARE";
         if (isDetergent) return "DETERGENT";
-
-        // 2. 명확한 물티슈 표기 ("물티슈", "비데티슈", "손입티슈")
-        const hasDirectWipes = full.includes("물티슈") || full.includes("물 티슈") || full.includes("비데티슈") || full.includes("비데 티슈") || full.includes("손입물티슈") || full.includes("손입티슈");
-
-        // 3. 스킨케어 제품 판별 (선케어, 로션, 크림, 수딩, 샴푸, 워시 등)
-        const isSkincare = skincareKeywords.some(k => full.includes(k.toLowerCase()));
-
-        // 물티슈 직접 명시가 없는데 스킨케어 키워드가 있다면 100% 스킨케어!
-        if (isSkincare && !hasDirectWipes) return "SKINCARE";
-
-        // 물티슈 직접 명시가 있다면 물티슈!
         if (hasDirectWipes) return "WIPES";
-
-        // 일반 물티슈 라인명 확인 (시그니처, 센시티브, 프리미어 등)
-        const isWipesLine = wipesKeywords.some(k => full.includes(k.toLowerCase()));
+        const isWipesLine = wipesKeywords.some(k => fullLower.includes(k.toLowerCase()));
         if (isWipesLine) return "WIPES";
-
-        // 기본값: 세제/스킨케어가 아니면 WIPES로 분류
+        // 기본값: 물티슈
         return "WIPES";
     }
+        
+
+
 
     // 강력 부정어 및 컴플레인 사전 (전면 보강)
     const badWords = [
@@ -1774,6 +1771,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         let skippedBad = 0;
         let skippedAnswered = 0;
         let skippedCategory = 0;
+        let firstSkippedProduct = "";
         const currentBatchSigs = [];
 
         // 전자동 연속 실행 모드는 50개(최대 개수), 테스트용(1회등록/눈으로확인)은 5개로 제한!
@@ -1789,7 +1787,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             api.forEachNode(node => {
                 if (selectedCount >= BATCH_TARGET_LIMIT) return;
                 const d = node.data || {};
-                const rowEl = document.querySelector(`.ag-row[row-id="${node.id}"], .ag-row[row-index="${node.rowIndex}"]`);
+                const targetDoc = reviewInfo.doc || document;
+                const rowEl = targetDoc.querySelector(`.ag-row[row-id="${node.id}"], .ag-row[row-index="${node.rowIndex}"]`);
                 const rowText = rowEl ? (rowEl.innerText || "").replace(/\s+/g, " ") : JSON.stringify(d);
 
                 // 1. 이번 세션에서 이미 처리된 서명이면 무조건 제외
@@ -1854,36 +1853,40 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     }
                 }
 
-                // 6. 상품명 & 옵션명 정밀 추출 및 카테고리 엄격 분리
-                let prodName = extractProductName(d, rowEl, prodColId, -1, api, node);
-                let optionInfo = extractOptionInfo(d, rowEl, optionColId, -1, api, node);
+                // 6. 상품명 & 옵션명 & 행 텍스트 종합 카테고리 분석
+                const extractedProd = extractProductName(d, rowEl, prodColId, -1, api, node);
+                const optionInfo = extractOptionInfo(d, rowEl, optionColId, -1, api, node);
+                const rowClean = reviewText ? rowText.replace(reviewText, " ") : rowText;
 
-                // 🛡️ [핵심 안전 Fallback]: 만약 정밀 컬럼에서 상품명을 못 찾았더라도,
-                // 고객 리뷰 본문을 제외한 순수 행 텍스트에서 상품명/옵션 텍스트 복원!
-                if (!prodName) {
-                    const rowClean = reviewText ? rowText.replace(reviewText, " ") : rowText;
-                    prodName = rowClean;
-                }
-                const detectedCat = classifyProductCategory(prodName, optionInfo);
+                // 상품명 + 옵션 + (고객 리뷰 본문만 제거된) 행 텍스트 전체를 결합하여 전방위 검사
+                const fullProductInfo = `${extractedProd} ${optionInfo} ${rowClean}`.trim();
+                const detectedCat = classifyProductCategory(fullProductInfo);
 
                 if (category === "SKINCARE") {
-                    const allow = (detectedCat === "SKINCARE") || (topSearchInfo.isTopSkincare && detectedCat !== "DETERGENT");
-                    if (!allow) {
-                        if (isTestMode) console.log(`%c[스킵 - 스킨케어 상품 아님 (판정: ${detectedCat})] 상품: "${prodName || '알수없음'}" / 옵션: "${optionInfo}"`, "color: #7b1fa2;");
+                    const isSkinMatch = (detectedCat === "SKINCARE") || 
+                                        skincareKeywords.some(k => fullProductInfo.toLowerCase().includes(k.toLowerCase())) ||
+                                        (topSearchInfo.isTopSkincare && detectedCat !== "DETERGENT");
+                    if (!isSkinMatch) {
+                        if (isTestMode) console.log(`%c[스킵 - 스킨케어 상품 아님 (판정: ${detectedCat})] 정보: "${fullProductInfo.slice(0, 50)}..."`, "color: #7b1fa2;");
+                        if (!firstSkippedProduct) firstSkippedProduct = fullProductInfo.slice(0, 60);
                         skippedCategory++;
                         return;
                     }
                 } else if (category === "DETERGENT") {
-                    const allow = (detectedCat === "DETERGENT") || (topSearchInfo.isTopDetergent && detectedCat !== "SKINCARE");
-                    if (!allow) {
-                        if (isTestMode) console.log(`%c[스킵 - 세제 상품 아님 (판정: ${detectedCat})] 상품: "${prodName || '알수없음'}" / 옵션: "${optionInfo}"`, "color: #7b1fa2;");
+                    const isDetMatch = (detectedCat === "DETERGENT") || 
+                                       detergentKeywords.some(k => fullProductInfo.toLowerCase().includes(k.toLowerCase())) ||
+                                       (topSearchInfo.isTopDetergent && detectedCat !== "SKINCARE");
+                    if (!isDetMatch) {
+                        if (isTestMode) console.log(`%c[스킵 - 세제 상품 아님 (판정: ${detectedCat})] 정보: "${fullProductInfo.slice(0, 50)}..."`, "color: #7b1fa2;");
+                        if (!firstSkippedProduct) firstSkippedProduct = fullProductInfo.slice(0, 60);
                         skippedCategory++;
                         return;
                     }
                 } else if (category === "WIPES") {
                     // 물티슈(전라인): 스킨케어나 세제 상품은 100% 배제!
                     if (detectedCat === "SKINCARE" || detectedCat === "DETERGENT") {
-                        if (isTestMode) console.log(`%c[스킵 - 물티슈 외 타제품(${detectedCat})] 상품: "${prodName || '알수없음'}" / 옵션: "${optionInfo}"`, "color: #7b1fa2;");
+                        if (isTestMode) console.log(`%c[스킵 - 물티슈 외 타제품(${detectedCat})] 정보: "${fullProductInfo.slice(0, 50)}..."`, "color: #7b1fa2;");
+                        if (!firstSkippedProduct) firstSkippedProduct = fullProductInfo.slice(0, 60);
                         skippedCategory++;
                         return;
                     }
@@ -1967,11 +1970,15 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
                 // 5. 상품명 & 옵션명 정밀 분석 및 카테고리 엄격 분리
                 let validProdName = prodName;
+                // Build comprehensive product info for classification
+                const rowClean = reviewText ? rowText.replace(reviewText, " ") : rowText;
+                const fullProductInfo = `${validProdName} ${optionInfo} ${rowClean}`.trim();
+                const detectedCat = classifyProductCategory(fullProductInfo);
                 if (!validProdName) {
                     const rowClean = reviewText ? rowText.replace(reviewText, " ") : rowText;
                     validProdName = rowClean;
                 }
-                const detectedCat = classifyProductCategory(validProdName, optionInfo);
+
 
                 if (category === "SKINCARE") {
                     const allow = (detectedCat === "SKINCARE") || (topSearchInfo.isTopSkincare && detectedCat !== "DETERGENT");
