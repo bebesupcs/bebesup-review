@@ -135,7 +135,7 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
                 ${isAutoLooping ? "자동 진행 중" : "베베숲 AI"}
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.6 (스킨케어·세제·옵션정보 정밀 카테고리 분리 완전 개편)
+                v2.8.7 (모음전·선케어·상품명 다중 안전 Fallback 엔진)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -778,11 +778,12 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             const h = (c.headerName || "").replace(/\s+/g, "");
             const f = c.field || c.colId;
             if (!f) continue;
-            if (!scoreColId && (h.includes("평점") || h.includes("별점"))) scoreColId = f;
-            if (!prodColId && (h.includes("상품명") || h.includes("주문상품") || h.includes("상품정보"))) prodColId = f;
-            if (!optionColId && (h.includes("옵션") || h.includes("단품") || h.includes("선택사항") || h.includes("주문선택"))) optionColId = f;
-            if (!contentColId && (h.includes("리뷰내용") || h.includes("내용"))) contentColId = f;
-            if (!replyColId && (h.includes("답글") || h.includes("답변"))) replyColId = f;
+            const fLower = String(f).toLowerCase();
+            if (!scoreColId && (h.includes("평점") || h.includes("별점") || fLower.includes("score") || fLower.includes("point"))) scoreColId = f;
+            if (!prodColId && (h.includes("상품명") || h.includes("주문상품") || h.includes("상품정보") || h.includes("구매상품") || h === "상품" || fLower.includes("productname") || fLower.includes("producttitle"))) prodColId = f;
+            if (!optionColId && (h.includes("옵션") || h.includes("단품") || h.includes("선택사항") || h.includes("주문선택") || fLower.includes("option"))) optionColId = f;
+            if (!contentColId && (h.includes("리뷰내용") || h.includes("내용") || fLower.includes("content") || fLower.includes("reviewtext"))) contentColId = f;
+            if (!replyColId && (h.includes("답글") || h.includes("답변") || fLower.includes("reply") || fLower.includes("answer"))) replyColId = f;
         }
         return { scoreColId, prodColId, optionColId, contentColId, replyColId };
     }
@@ -1284,7 +1285,19 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             try {
                 const val = api.getValue(prodColId, node);
                 if (val && typeof val === 'string' && val.trim()) return val.trim();
+                if (val && typeof val === 'object') {
+                    const p = val.productName || val.channelProductName || val.name || val.title;
+                    if (p && typeof p === 'string' && p.trim()) return p.trim();
+                }
             } catch(e) {}
+        }
+
+        // 네트워크 인터셉터 데이터 조회
+        const reviewNo = d?.reviewNo || d?.reviewId || d?.id || d?.productOrderReviewNo;
+        if (reviewNo && window.__BEBESUP_API_REVIEWS_MAP__?.has(String(reviewNo))) {
+            const apiItem = window.__BEBESUP_API_REVIEWS_MAP__.get(String(reviewNo));
+            const p = apiItem.productName || apiItem.channelProductName || apiItem.originProduct?.productName || apiItem.itemTitle || apiItem.productTitle;
+            if (p && typeof p === 'string' && p.trim()) return p.trim();
         }
 
         if (d && typeof d === 'object') {
@@ -1302,6 +1315,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             if (d.productOrder?.productName) return String(d.productOrder.productName).trim();
             if (d.productOrder?.channelProductName) return String(d.productOrder.channelProductName).trim();
             if (d.originProduct?.productName) return String(d.originProduct.productName).trim();
+            if (d.review?.productName) return String(d.review.productName).trim();
+            if (d.channelProduct?.name) return String(d.channelProduct.name).trim();
         }
 
         if (rowElOrTr) {
@@ -1317,6 +1332,13 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 if (titleAttr) return titleAttr.trim();
                 const txt = (cell.innerText || cell.textContent || "").trim();
                 if (txt) return txt;
+            }
+            if (rowElOrTr.querySelector) {
+                const prodEl = rowElOrTr.querySelector("a[href*='product'], a[href*='item'], [class*='product'], [class*='item']");
+                if (prodEl) {
+                    const t = (prodEl.getAttribute("title") || prodEl.innerText || "").trim();
+                    if (t) return t;
+                }
             }
         }
 
@@ -1470,8 +1492,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     ];
 
     const wipesKeywords = [
-        "물티슈", "티슈", "비데티슈", "비데", "시그니처", "센시티브", "프리미어", "라이트", "제로",
-        "손입", "손입물티슈", "평량", "엠보싱", "플레인", "휴대", "캡형", "리필형", "아이캔", "에코", "네이처"
+        "물티슈", "티슈", "비데티슈", "비데", "시그니처", "센시티브", "프리미어",
+        "손입", "손입물티슈", "평량", "엠보싱", "플레인", "휴대", "캡형", "리필형", "아이캔"
     ];
 
     // 상품명 및 옵션명을 종합 분석하여 카테고리를 엄격 판정
@@ -1483,17 +1505,23 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         const isDetergent = detergentKeywords.some(k => full.includes(k.toLowerCase()));
         if (isDetergent) return "DETERGENT";
 
-        // 2. 물티슈 명시 제품 확인 ("카밍 물티슈", "수딩 물티슈" 등이 스킨케어로 오인되는 것 방지)
-        const hasExplicitWipes = wipesKeywords.some(k => full.includes(k.toLowerCase()));
+        // 2. 명확한 물티슈 표기 ("물티슈", "비데티슈", "손입티슈")
+        const hasDirectWipes = full.includes("물티슈") || full.includes("물 티슈") || full.includes("비데티슈") || full.includes("비데 티슈") || full.includes("손입물티슈") || full.includes("손입티슈");
 
-        // 3. 스킨케어 제품 판별 (로션, 크림, 워시, 수딩, 샴푸 등)
+        // 3. 스킨케어 제품 판별 (선케어, 로션, 크림, 수딩, 샴푸, 워시 등)
         const isSkincare = skincareKeywords.some(k => full.includes(k.toLowerCase()));
-        if (isSkincare && !hasExplicitWipes) return "SKINCARE";
 
-        // 4. 물티슈 키워드 포함 시 물티슈
-        if (hasExplicitWipes) return "WIPES";
+        // 물티슈 직접 명시가 없는데 스킨케어 키워드가 있다면 100% 스킨케어!
+        if (isSkincare && !hasDirectWipes) return "SKINCARE";
 
-        // 5. 기본적으로 베베숲 대다수 제품은 물티슈이므로 세제/스킨케어가 아니면 WIPES로 분류
+        // 물티슈 직접 명시가 있다면 물티슈!
+        if (hasDirectWipes) return "WIPES";
+
+        // 일반 물티슈 라인명 확인 (시그니처, 센시티브, 프리미어 등)
+        const isWipesLine = wipesKeywords.some(k => full.includes(k.toLowerCase()));
+        if (isWipesLine) return "WIPES";
+
+        // 기본값: 세제/스킨케어가 아니면 WIPES로 분류
         return "WIPES";
     }
 
@@ -1827,8 +1855,15 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 }
 
                 // 6. 상품명 & 옵션명 정밀 추출 및 카테고리 엄격 분리
-                const prodName = extractProductName(d, rowEl, prodColId, -1, api, node);
-                const optionInfo = extractOptionInfo(d, rowEl, optionColId, -1, api, node);
+                let prodName = extractProductName(d, rowEl, prodColId, -1, api, node);
+                let optionInfo = extractOptionInfo(d, rowEl, optionColId, -1, api, node);
+
+                // 🛡️ [핵심 안전 Fallback]: 만약 정밀 컬럼에서 상품명을 못 찾았더라도,
+                // 고객 리뷰 본문을 제외한 순수 행 텍스트에서 상품명/옵션 텍스트 복원!
+                if (!prodName) {
+                    const rowClean = reviewText ? rowText.replace(reviewText, " ") : rowText;
+                    prodName = rowClean;
+                }
                 const detectedCat = classifyProductCategory(prodName, optionInfo);
 
                 if (category === "SKINCARE") {
@@ -1931,7 +1966,12 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 }
 
                 // 5. 상품명 & 옵션명 정밀 분석 및 카테고리 엄격 분리
-                const detectedCat = classifyProductCategory(prodName, optionInfo);
+                let validProdName = prodName;
+                if (!validProdName) {
+                    const rowClean = reviewText ? rowText.replace(reviewText, " ") : rowText;
+                    validProdName = rowClean;
+                }
+                const detectedCat = classifyProductCategory(validProdName, optionInfo);
 
                 if (category === "SKINCARE") {
                     const allow = (detectedCat === "SKINCARE") || (topSearchInfo.isTopSkincare && detectedCat !== "DETERGENT");
