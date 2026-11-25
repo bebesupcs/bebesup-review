@@ -87,18 +87,6 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
         document.getElementById("bebesup-helper-panel").remove();
     }
 
-    // 상세검색 영역에 오입력되었던 답글 텍스트 자동 복구/정리
-    try {
-        const detailTas = document.querySelectorAll("textarea");
-        for (const ta of detailTas) {
-            if (ta.value && ta.value.includes("베베숲입니다. 소중한 리뷰 감사드립니다")) {
-                ta.value = "";
-                ta.dispatchEvent(new Event('input', { bubbles: true }));
-                ta.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-        }
-    } catch(e) {}
-
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
     // 세션 스토리지에서 자동 반복 실행 상태 확인
@@ -135,7 +123,7 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
                 ${isAutoLooping ? "자동 진행 중" : "베베숲 AI"}
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.8 (선케어·모음전 전수 감지 & 풀 텍스트 분석 엔진)
+                v2.8.10 (리뷰 선별 및 일괄 등록 검증)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -344,6 +332,11 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
     //   1행: [리뷰 글번호] -> 선택된 리뷰 번호 목록 (절대 건드리면 안 됨!)
     //   2행: [답글 내용]   -> 실제 작성할 공식 답변 내용 (여기에 정확히 입력!)
     // ========================================================
+    function isVisible(element) {
+        return element.getClientRects().length > 0 &&
+            element.ownerDocument.defaultView?.getComputedStyle(element).visibility === "visible";
+    }
+
     function findReplyModalInfo(preferredDoc) {
         const docs = [preferredDoc, document];
         try {
@@ -361,25 +354,67 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
 
             // 1. "판매자 일괄 답글 작성" 모달 컨테이너 탐색 (실제 화면에 표시된 모달만 검사)
             const modals = Array.from(doc.querySelectorAll(".modal-content, div.modal, [role='dialog'], .n-layer-popup, div[class*='layer_popup'], div[class*='modal'], div[class*='popup'], div[class*='layer']"));
-            const targetModal = modals.find(m => {
-                if (m.closest("#bebesup-helper-panel")) return false;
-                const txt = (m.innerText || "").replace(/\s+/g, "");
-                // 경고/에러 알림("리뷰를 선택해주세요" 등)은 답글 작성 모달이 아니므로 제외
-                if (txt.includes("선택해주세요") || txt.includes("초과되었습니다") || (txt.includes("오류") && !txt.includes("답글"))) return false;
-                return txt.includes("일괄답글") || txt.includes("답글작성") || txt.includes("답글내용") || (txt.includes("답글") && (txt.includes("등록") || txt.includes("작성")));
-            });
+            for (const modal of modals.reverse()) {
+                if (modal.closest("#bebesup-helper-panel") || !isVisible(modal)) continue;
+                const text = (modal.innerText || "").replace(/\s+/g, "");
+                if (!/리뷰(?:글)?번호/.test(text) || !text.includes("답글내용")) continue;
 
-            if (targetModal) {
-                const tas = Array.from(targetModal.querySelectorAll("textarea, [contenteditable='true']")).filter(t => !t.closest("#bebesup-helper-panel"));
-                if (tas.length >= 2) {
-                    const replyBox = tas[1] || tas[tas.length - 1];
-                    return { modal: targetModal, textarea: replyBox, doc };
-                } else if (tas.length === 1) {
-                    return { modal: targetModal, textarea: tas[0], doc };
+                const tas = modal.querySelectorAll("textarea");
+                const replyBox = tas[1];
+                if (tas.length === 2 && isVisible(replyBox) && !replyBox.disabled && !replyBox.readOnly) {
+                    return { modal, textarea: replyBox, doc };
                 }
             }
         }
         return null;
+    }
+
+    function getVisibleReplyNotices(docs) {
+        const notices = new Map();
+        for (const doc of new Set(docs)) {
+            const elements = doc.querySelectorAll("[role='alert'], [role='status'], [role='alertdialog'], [role='dialog'], .modal-content, .n-layer-popup");
+            for (const element of Array.from(elements).reverse()) {
+                if (element.closest("#bebesup-helper-panel") || !isVisible(element)) continue;
+                if (Array.from(notices.keys()).some(child => element.contains(child))) continue;
+                const text = (element.innerText || "").replace(/\s+/g, "");
+                if (text) notices.set(element, text);
+            }
+        }
+        return notices;
+    }
+
+    function getReplyNoticeStatus(text, expectedCount) {
+        if (/(?:실패|오류|미등록|일부|제외|등록할수없|처리할수없)/u.test(text)) return "REGISTRATION_FAILED";
+        const success = text.match(/^(?:알림|안내|등록결과)?(?:(?:총)?(\d+)건(?:의)?)?(?:판매자)?(?:일괄)?답글(?:이|을)?(?:정상적으로|성공적으로)?등록(?:되었습니다|했습니다|이완료되었습니다|완료)(?:[.!]|확인|닫기)*$/u);
+        if (success) {
+            return success[1] === undefined || Number(success[1]) === expectedCount ?
+                "REGISTERED" : "REGISTRATION_UNVERIFIED";
+        }
+        if (/답글.{0,20}등록.{0,10}(?:하시겠습니까|할까요)/u.test(text)) return "CONFIRM";
+        return null;
+    }
+
+    async function waitForReplyRegistration(docs, previousNotices, expectedCount) {
+        let confirmed = false;
+        for (let attempt = 0; attempt < 30; attempt++) {
+            const notices = getVisibleReplyNotices(docs);
+            for (const [notice, text] of notices) {
+                if (previousNotices.get(notice) === text || notice.querySelector("textarea")) continue;
+                const status = getReplyNoticeStatus(text, expectedCount);
+                if (status === "CONFIRM" && !confirmed) {
+                    const button = Array.from(notice.querySelectorAll("button, input[type='button'], [role='button']"))
+                        .find(btn => isVisible(btn) && !btn.disabled && /^(?:확인|예|네)$/.test((btn.innerText || btn.value || "").trim()));
+                    if (button) {
+                        confirmed = true;
+                        button.click();
+                    }
+                } else if (status && status !== "CONFIRM") {
+                    return { status, notice };
+                }
+            }
+            await sleep(300);
+        }
+        return { status: "REGISTRATION_UNVERIFIED" };
     }
 
     function analyzeReviewData(rawReviews) {
@@ -387,6 +422,7 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
         let yellowCount = 0;
         let greenCount = 0;
         let totalScore = 0;
+        let ratedCount = 0;
 
         const issueCounts = {
             "캡/뚜껑 헐거움": 0,
@@ -401,8 +437,11 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
 
         const analyzedList = rawReviews.map((r, i) => {
             const text = String(r.text || "").trim();
-            const score = Number(r.score) || 5;
-            totalScore += score;
+            const score = r.score ?? 0;
+            if (score > 0) {
+                totalScore += score;
+                ratedCount++;
+            }
 
             let grade = "GREEN";
             let issueType = "단순 만족/칭찬";
@@ -509,7 +548,7 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
             };
         });
 
-        const avgScore = rawReviews.length > 0 ? (totalScore / rawReviews.length).toFixed(2) : "0.00";
+        const avgScore = ratedCount > 0 ? (totalScore / ratedCount).toFixed(2) : "—";
         return {
             total: rawReviews.length,
             avgScore,
@@ -782,7 +821,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             if (!scoreColId && (h.includes("평점") || h.includes("별점") || fLower.includes("score") || fLower.includes("point"))) scoreColId = f;
             if (!prodColId && (h.includes("상품명") || h.includes("주문상품") || h.includes("상품정보") || h.includes("구매상품") || h === "상품" || fLower.includes("productname") || fLower.includes("producttitle"))) prodColId = f;
             if (!optionColId && (h.includes("옵션") || h.includes("단품") || h.includes("선택사항") || h.includes("주문선택") || fLower.includes("option"))) optionColId = f;
-            if (!contentColId && (h.includes("리뷰내용") || h.includes("내용") || fLower.includes("content") || fLower.includes("reviewtext"))) contentColId = f;
+            if (!contentColId && !/답글|답변|reply|answer/i.test(h + fLower) &&
+                (h.includes("리뷰내용") || h === "내용" || /^(?:reviewContent|reviewText|reviewBody|content)$/i.test(f))) contentColId = f;
             if (!replyColId && (h.includes("답글") || h.includes("답변") || fLower.includes("reply") || fLower.includes("answer"))) replyColId = f;
         }
         return { scoreColId, prodColId, optionColId, contentColId, replyColId };
@@ -798,7 +838,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             if (scoreColIdx === -1 && (h.includes("평점") || h.includes("별점"))) scoreColIdx = idx;
             if (prodColIdx === -1 && (h.includes("상품명") || h.includes("주문상품") || h.includes("상품정보") || h.includes("구매상품") || h === "상품")) prodColIdx = idx;
             if (optionColIdx === -1 && (h.includes("옵션") || h.includes("단품") || h.includes("선택사항") || h.includes("옵션정보"))) optionColIdx = idx;
-            if (contentColIdx === -1 && (h.includes("리뷰내용") || h.includes("내용"))) contentColIdx = idx;
+            if (contentColIdx === -1 && (h.includes("리뷰내용") || h === "내용")) contentColIdx = idx;
             if (replyColIdx === -1 && (h.includes("답글") || h.includes("답변"))) replyColIdx = idx;
             if (reviewNoColIdx === -1 && (h.includes("리뷰글번호") || h.includes("글번호") || h.includes("리뷰번호") || h.includes("번호"))) reviewNoColIdx = idx;
         });
@@ -806,7 +846,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     }
 
     // AngularJS Scope에서 단일 리뷰 데이터 객체 탐색
-    function findReviewObjectFromScope(scope, targetReviewNo = null, targetIndex = -1) {
+    function findReviewObjectFromScope(scope, targetReviewNo = null) {
         if (!scope) return null;
 
         // 1) scope 자체의 직접 속성 검사
@@ -815,7 +855,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             const obj = scope[p];
             if (obj && typeof obj === 'object') {
                 if (obj.reviewContent || obj.productName || obj.channelProductName || obj.reviewScore || obj.reviewNo || obj.reviewScorePoint) {
-                    if (!targetReviewNo || String(obj.reviewNo || obj.id || obj.reviewId || "").includes(targetReviewNo)) {
+                    if (!targetReviewNo || String(obj.reviewNo || obj.id || obj.reviewId || "") === String(targetReviewNo)) {
                         return obj;
                     }
                 }
@@ -828,7 +868,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             const val = scope[key];
             if (val && typeof val === 'object' && !Array.isArray(val)) {
                 if (val.reviewContent || val.productName || val.channelProductName || val.reviewScore || val.reviewNo || val.reviewScorePoint) {
-                    if (!targetReviewNo || String(val.reviewNo || val.id || val.reviewId || "").includes(targetReviewNo)) {
+                    if (!targetReviewNo || String(val.reviewNo || val.id || val.reviewId || "") === String(targetReviewNo)) {
                         return val;
                     }
                 }
@@ -846,10 +886,6 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     if (targetReviewNo) {
                         const found = arr.find(x => x && String(x.reviewNo || x.id || x.reviewId || x.productOrderReviewNo || "") === String(targetReviewNo));
                         if (found) return found;
-                    }
-                    const idx = typeof scope.$index === 'number' ? scope.$index : targetIndex;
-                    if (idx >= 0 && arr[idx]) {
-                        return arr[idx];
                     }
                 }
             }
@@ -956,50 +992,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     }
 
     // 스마트스토어 상단 검색창에 판매자가 직접 입력/선택한 검색 조건 감지
-    function getSmartStoreTopSearchInfo() {
-        const docs = [document];
-        try {
-            const iframes = Array.from(document.querySelectorAll("iframe, frame"));
-            for (const ifr of iframes) {
-                const fDoc = ifr.contentDocument || ifr.contentWindow?.document;
-                if (fDoc && !docs.includes(fDoc)) docs.push(fDoc);
-            }
-        } catch(e) {}
-
-        let searchKeywords = [];
-
-        for (const doc of docs) {
-            // 상단 검색 폼/필터 영역 안의 input 위주로 탐색 (전체 페이지의 무작위 select/label 오탐 방지)
-            const searchContainers = Array.from(doc.querySelectorAll(".search-form, .panel-search, form, .seller-search, .filter-box, .search_box, [class*='search']"));
-            const targetScopes = searchContainers.length > 0 ? searchContainers : [doc];
-
-            for (const scopeEl of targetScopes) {
-                const inputs = Array.from(scopeEl.querySelectorAll("input[type='text'], input:not([type])"));
-                for (const inp of inputs) {
-                    if (inp.closest("#bebesup-helper-panel")) continue;
-                    const val = (inp.value || "").trim();
-                    if (val && val.length >= 2 && !val.includes("전체") && !val.includes("선택") && !val.includes("초기화")) {
-                        searchKeywords.push(val);
-                    }
-                }
-            }
-        }
-
-        const combined = searchKeywords.join(" ");
-        const isTopDetergent = detergentKeywords.some(k => combined.includes(k));
-        const isTopSkincare = skincareKeywords.some(k => combined.includes(k));
-        const isTopWipes = wipesKeywords.some(k => combined.includes(k));
-
-        return {
-            combined,
-            isTopDetergent,
-            isTopSkincare,
-            isTopWipes
-        };
-    }
-
     // 스마트스토어 HTML Table의 1개 행(tr)에 대한 전방위 정밀 데이터 추출기
-    function extractSmartStoreRowData(tr, rowIndex, colIndexes, globalList = []) {
+    function extractSmartStoreRowData(tr, colIndexes, globalList = []) {
         const { scoreColIdx = -1, prodColIdx = -1, optionColIdx = -1, contentColIdx = -1, replyColIdx = -1, reviewNoColIdx = -1 } = colIndexes || {};
         const tds = Array.from(tr.querySelectorAll("td"));
         const rowText = (tr.innerText || "").replace(/\s+/g, " ");
@@ -1010,11 +1004,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             reviewNo = (tds[reviewNoColIdx].innerText || "").trim().replace(/\D/g, "");
         }
         if (!reviewNo) {
-            const idMatch = rowText.match(/\b5\d{9}\b/) || rowText.match(/\b\d{9,11}\b/);
-            if (idMatch) reviewNo = idMatch[0];
-        }
-        if (!reviewNo) {
-            reviewNo = tr.getAttribute("data-id") || tr.getAttribute("data-review-id") || tr.getAttribute("row-id") || tr.getAttribute("id") || "";
+            reviewNo = tr.getAttribute("data-review-id") || tr.getAttribute("data-review-no") || "";
         }
 
         // 2. 데이터 소스 전방위 탐색 (네트워크 스니퍼, React Fiber, AngularJS, 전역 목록)
@@ -1028,6 +1018,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         // 2-B. React Fiber 탐색 (스마트스토어가 React 기반일 경우 memoizedProps에서 추출)
         if (!rawItem) {
             rawItem = findReviewFromReactFiber(tr);
+            const rawReviewNo = rawItem?.reviewNo || rawItem?.reviewId || rawItem?.productOrderReviewNo;
+            if (reviewNo && String(rawReviewNo || "") !== String(reviewNo)) rawItem = null;
         }
 
         // 2-C. AngularJS Scope 탐색
@@ -1040,7 +1032,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     for (const el of elsToTry) {
                         const s = ng.element(el).scope();
                         if (s) {
-                            rawItem = findReviewObjectFromScope(s, reviewNo, rowIndex);
+                            rawItem = findReviewObjectFromScope(s, reviewNo);
                             if (rawItem) break;
                         }
                     }
@@ -1053,127 +1045,12 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             if (reviewNo) {
                 rawItem = globalList.find(x => x && String(x.reviewNo || x.id || x.reviewId || x.productOrderReviewNo || "") === String(reviewNo));
             }
-            if (!rawItem && rowIndex >= 0 && globalList[rowIndex]) {
-                rawItem = globalList[rowIndex];
-            }
         }
 
-        // 3. 상품명(prodName) 및 옵션명(optionInfo) 추출
-        let prodName = "";
-        let optionInfo = "";
-        if (rawItem) {
-            const prodFields = [
-                'productName', 'channelProductName', 'productTitle', 'channelProductTitle',
-                'channelProductDisplaySummary', 'channelItemName', 'itemName', 'itemTitle',
-                'productDisplaySummary'
-            ];
-            for (const f of prodFields) {
-                if (rawItem[f] && typeof rawItem[f] === 'string' && rawItem[f].trim()) {
-                    prodName = rawItem[f].trim();
-                    break;
-                }
-            }
-            if (!prodName && rawItem.productOrderReview?.productName) prodName = String(rawItem.productOrderReview.productName).trim();
-            if (!prodName && rawItem.productOrderReview?.channelProductName) prodName = String(rawItem.productOrderReview.channelProductName).trim();
-            if (!prodName && rawItem.productOrderReview?.productTitle) prodName = String(rawItem.productOrderReview.productTitle).trim();
-            if (!prodName && rawItem.originProduct?.productName) prodName = String(rawItem.originProduct.productName).trim();
-            if (!prodName && rawItem.productOrder?.productName) prodName = String(rawItem.productOrder.productName).trim();
-
-            const optFields = ['channelProductOption', 'productOption', 'optionInfo', 'channelProductDisplaySummary', 'productDisplaySummary', 'itemOption', 'optionName'];
-            for (const of of optFields) {
-                if (rawItem[of] && typeof rawItem[of] === 'string' && rawItem[of].trim()) {
-                    optionInfo = rawItem[of].trim();
-                    break;
-                }
-                if (rawItem.productOrderReview?.[of] && typeof rawItem.productOrderReview[of] === 'string') {
-                    optionInfo = rawItem.productOrderReview[of].trim();
-                    break;
-                }
-                if (rawItem.productOrder?.[of] && typeof rawItem.productOrder[of] === 'string') {
-                    optionInfo = rawItem.productOrder[of].trim();
-                    break;
-                }
-            }
-        }
-        if (!prodName && prodColIdx >= 0 && tds[prodColIdx]) {
-            const cell = tds[prodColIdx];
-            prodName = cell.getAttribute("title") || cell.querySelector("[title]")?.getAttribute("title") || (cell.innerText || "").trim();
-        }
-        if (!optionInfo && optionColIdx >= 0 && tds[optionColIdx]) {
-            const optCell = tds[optionColIdx];
-            optionInfo = optCell.getAttribute("title") || optCell.querySelector("[title]")?.getAttribute("title") || (optCell.innerText || "").trim();
-        }
-        if (!prodName) {
-            const prodEl = tr.querySelector("a[href*='product'], a[href*='item'], [class*='product'], [class*='item']");
-            if (prodEl) {
-                prodName = (prodEl.getAttribute("title") || prodEl.innerText || "").trim();
-            }
-        }
-
-        // 4. 리뷰 본문(reviewText) 추출 (말줄임표 없는 완전한 원문 수집)
-        let reviewText = "";
-        if (rawItem) {
-            const contentFields = ['reviewContent', 'content', 'reviewBody', 'reviewText', 'contents', 'comment', 'detailContent', 'productReviewContent'];
-            const candidates = [];
-            for (const f of contentFields) {
-                if (rawItem[f] && typeof rawItem[f] === 'string' && rawItem[f].trim()) {
-                    candidates.push(rawItem[f].trim());
-                }
-            }
-            if (rawItem.review && typeof rawItem.review === 'object') {
-                for (const f of contentFields) {
-                    if (rawItem.review[f] && typeof rawItem.review[f] === 'string') candidates.push(rawItem.review[f].trim());
-                }
-            }
-            if (candidates.length > 0) {
-                candidates.sort((a, b) => b.length - a.length);
-                reviewText = candidates[0];
-            }
-        }
-
-        // DOM 속성(uib-tooltip, tooltip, title, data-content 등)에서 온전한 본문 수집
-        if (!reviewText || reviewText.endsWith("...") || reviewText.endsWith("…")) {
-            let bestTooltip = "";
-            const allDescendants = Array.from(tr.querySelectorAll("*"));
-            for (const el of allDescendants) {
-                for (const attr of ["uib-tooltip", "tooltip", "title", "data-original-title", "data-content", "data-text", "data-tooltip"]) {
-                    const val = el.getAttribute?.(attr);
-                    if (val && typeof val === 'string' && val.trim().length > bestTooltip.length) {
-                        bestTooltip = val.trim();
-                    }
-                }
-            }
-            if (bestTooltip && (!reviewText || bestTooltip.length > reviewText.length)) {
-                reviewText = bestTooltip;
-            }
-        }
-
-        if (!reviewText) {
-            if (contentColIdx >= 0 && tds[contentColIdx]) {
-                reviewText = (tds[contentColIdx].innerText || "").trim();
-            } else {
-                reviewText = rowText;
-            }
-        }
-
-        // 5. 평점(score) 추출
-        let score = 5;
-        if (rawItem) {
-            const scoreFields = ['reviewScorePoint', 'evaluationPoint', 'reviewScore', 'starScore', 'score', 'point', 'reviewPoint', 'rating', 'starRating'];
-            for (const f of scoreFields) {
-                if (rawItem[f] !== undefined && rawItem[f] !== null && rawItem[f] !== '') {
-                    const n = Number(rawItem[f]);
-                    if (!isNaN(n) && n >= 1 && n <= 5) {
-                        score = n;
-                        break;
-                    }
-                }
-            }
-        }
-        if (!rawItem || score === 5) {
-            const domScore = extractReviewScore(null, tr, null, scoreColIdx, null, null);
-            if (domScore >= 1 && domScore <= 5) score = domScore;
-        }
+        const prodName = extractProductName(rawItem, tr, null, prodColIdx);
+        const optionInfo = extractOptionInfo(rawItem, tr, null, optionColIdx);
+        const reviewText = extractReviewContent(rawItem, tr, null, contentColIdx);
+        const score = extractReviewScore(rawItem, tr, null, scoreColIdx);
 
         // 6. 이미 답글완료 여부(isAnswered) 판별
         let isAnswered = false;
@@ -1191,7 +1068,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         }
         if (!isAnswered && replyColIdx >= 0 && tds[replyColIdx]) {
             const rTxt = (tds[replyColIdx].innerText || "").trim();
-            if (rTxt !== "N" && rTxt !== "" && (!rTxt.startsWith("N") || rTxt.includes("Y") || rTxt.includes("완료"))) {
+            if (/^(?:Y|답글?완료|답변완료|등록완료|등록)$/i.test(rTxt.replace(/\s+/g, ""))) {
                 isAnswered = true;
             }
         }
@@ -1211,72 +1088,49 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         };
     }
 
-    // 3. 평점(1~5점) 100% 정밀 추출기 (ag-Grid API, node.data, DOM 셀 전방위 파싱)
+    function parseReviewScore(value) {
+        if (typeof value !== "string" && typeof value !== "number") return null;
+        const text = String(value).trim();
+        const fraction = text.match(/^(?:총\s*)?5\s*점\s*만점(?:에|\s*중)?\s*([1-5])\s*점?$/) ||
+                         text.match(/^([1-5])\s*(?:점\s*)?\/\s*5\s*점?$/);
+        if (fraction) return Number(fraction[1]);
+        const points = text.match(/^(?:(?:평점|별점)\s*[:：]?\s*)?([1-5])(?:\.0+)?\s*점?$/);
+        if (points) return Number(points[1]);
+        const stars = text.match(/^(★{1,5})(☆{0,4})(?:\s*([1-5])\s*점?)?$/);
+        if (!stars || stars[1].length + stars[2].length > 5) return null;
+        return !stars[3] || Number(stars[3]) === stars[1].length ? stars[1].length : null;
+    }
+
     function extractReviewScore(d, rowElOrTr, scoreColId, scoreColIdx, api, node) {
-        // A. ag-Grid API로 직접 셀 값 조회
+        const scores = [];
         if (api && node && scoreColId) {
-            try {
-                const val = api.getValue(scoreColId, node);
-                const n = Number(val);
-                if (!isNaN(n) && n >= 1 && n <= 5) return n;
-            } catch(e) {}
+            try { scores.push(parseReviewScore(api.getValue(scoreColId, node))); } catch(e) {}
         }
 
-        // B. ag-Grid node.data 객체 내 알려진 평점 필드 검사
-        if (d && typeof d === 'object') {
-            const scoreFields = [
-                'reviewScorePoint', 'evaluationPoint', 'reviewScore', 'starScore',
-                'score', 'point', 'reviewPoint', 'rating', 'starRating', 'reviewStarPoint'
-            ];
-            for (const f of scoreFields) {
-                if (d[f] !== undefined && d[f] !== null && d[f] !== '') {
-                    const n = Number(d[f]);
-                    if (!isNaN(n) && n >= 1 && n <= 5) return n;
-                }
-            }
+        const fields = [
+            "reviewScorePoint", "evaluationPoint", "reviewScore", "starScore", "score",
+            "point", "reviewPoint", "rating", "starRating", "reviewStarPoint"
+        ];
+        for (const source of [d, d?.review, d?.productOrderReview]) {
+            if (!source) continue;
+            for (const field of fields) scores.push(parseReviewScore(source[field]));
         }
 
-        // C. DOM element (rowEl 또는 tr) 셀 검사
-        if (rowElOrTr) {
-            let targetEl = rowElOrTr;
-            if (scoreColIdx >= 0 && rowElOrTr.querySelectorAll) {
-                const cells = Array.from(rowElOrTr.querySelectorAll("td, .ag-cell"));
-                if (cells[scoreColIdx]) targetEl = cells[scoreColIdx];
-            } else if (scoreColId && rowElOrTr.querySelector) {
-                const cell = rowElOrTr.querySelector(`[col-id="${scoreColId}"]`);
-                if (cell) targetEl = cell;
-            }
-
-            const cellText = (targetEl.innerText || targetEl.textContent || "").trim();
-
-            // 1) "★★★★★ 5" 또는 "★☆☆☆☆ 1" 패턴
-            const starNumMatch = cellText.match(/★+☆*\s*([1-5])/);
-            if (starNumMatch) return Number(starNumMatch[1]);
-
-            // 2) 채워진 별 '★' 개수 직접 카운트 (스마트스토어는 1점에 ★ 1개, 2점에 ★ 2개 표시)
-            const starCount = (cellText.match(/★/g) || []).length;
-            if (starCount >= 1 && starCount <= 5) return starCount;
-
-            // 3) "[1-5]점" 또는 "5점 만점에 1점"
-            const pointMatch = cellText.match(/([1-5])점/);
-            if (pointMatch) return Number(pointMatch[1]);
-
-            // 4) 서브 엘리먼트(.score, .rating, .point, .blind) 내부 숫자 검사
-            const subEl = targetEl.querySelector?.(".score, .point, .rating, .blind, [class*='star']");
-            if (subEl) {
-                const subText = (subEl.innerText || subEl.textContent || "").trim();
-                const subMatch = subText.match(/([1-5])/);
-                if (subMatch) return Number(subMatch[1]);
-            }
-
-            // 5) 셀 내부의 단독 숫자 1~5
-            if (targetEl !== rowElOrTr) {
-                const digitMatch = cellText.match(/\b([1-5])\b/);
-                if (digitMatch) return Number(digitMatch[1]);
+        let cell;
+        if (scoreColIdx >= 0) {
+            cell = rowElOrTr?.querySelectorAll("td, .ag-cell")[scoreColIdx];
+        } else if (scoreColId) {
+            cell = rowElOrTr?.querySelector('[col-id="' + scoreColId + '"]');
+        }
+        if (cell) {
+            scores.push(parseReviewScore(cell.innerText || cell.textContent));
+            for (const label of cell.querySelectorAll(".score, .point, .rating, .blind, [class*='star']")) {
+                scores.push(parseReviewScore(label.innerText || label.textContent));
             }
         }
 
-        return 5; // 판별 불가 시 기본값
+        const knownScores = new Set(scores.filter(score => score !== null));
+        return knownScores.size === 1 ? knownScores.values().next().value : null;
     }
 
     // 4. 상품명 및 옵션명 정밀 추출기 (리뷰 본문 텍스트와 절대 섞이지 않도록 격리)
@@ -1332,13 +1186,6 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 if (titleAttr) return titleAttr.trim();
                 const txt = (cell.innerText || cell.textContent || "").trim();
                 if (txt) return txt;
-            }
-            if (rowElOrTr.querySelector) {
-                const prodEl = rowElOrTr.querySelector("a[href*='product'], a[href*='item'], [class*='product'], [class*='item']");
-                if (prodEl) {
-                    const t = (prodEl.getAttribute("title") || prodEl.innerText || "").trim();
-                    if (t) return t;
-                }
             }
         }
 
@@ -1436,7 +1283,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         // 3) DOM 엘리먼트 및 AngularJS Scope 탐색
         if (rowElOrTr) {
             // AngularJS scope에서 원본 row 객체 탐색
-            if (window.angular) {
+            if (!d && window.angular) {
                 try {
                     const scope = window.angular.element(rowElOrTr).scope();
                     const rowData = scope?.row || scope?.data || scope?.item || scope?.review;
@@ -1469,7 +1316,6 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 }
                 return (cell.innerText || cell.textContent || "").trim();
             }
-            return (rowElOrTr.innerText || "").trim();
         }
 
         return "";
@@ -1478,7 +1324,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     // 카테고리 판별 사전 (스킨케어, 세제, 물티슈)
     const skincareKeywords = [
         "로션", "크림", "수딩젤", "수딩밤", "수딩", "바스앤샴푸", "바스&샴푸", "바스", "샴푸", "워시",
-        "스킨케어", "선크림", "선스틱", "선쿠션", "선팩트", "선케어", "클렌저", "클렌징", "오일",
+        "스킨", "선크림", "선스틱", "선쿠션", "선팩트", "선케어", "클렌저", "클렌징", "오일",
         "베이비오일", "마사지오일", "파우더로션", "수딩파우더", "파우더", "립밤", "스틱밤", "탑투토",
         "탑투토워시", "소프트너", "아토에코", "모이스처", "바디워시", "헤어워시", "인텐시브", "포밍워시",
         "버블워시", "너리싱", "엠플", "세럼", "자외선차단", "베이비로션", "베이비크림", "보습크림"
@@ -1492,35 +1338,24 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     ];
 
     const wipesKeywords = [
-        "물티슈", "티슈", "비데티슈", "비데", "시그니처", "센시티브", "프리미어",
-        "손입", "손입물티슈", "평량", "엠보싱", "플레인", "휴대", "캡형", "리필형", "아이캔"
+        "물티슈", "비데티슈", "손입티슈"
     ];
 
-    // 상품명 및 옵션명을 종합 분석하여 카테고리를 엄격 판정
-    // 반환값: "SKINCARE" | "DETERGENT" | "WIPES"
-    function classifyProductCategory(full = "") {
-        const fullLower = full.toLowerCase();
-        // Known product IDs for troubleshooting
-        const skincareIds = ["13810363562", "11809705069"]; // SKINCARE IDs from user
-        const detergentIds = ["12481218458", "12481188250", "6882224318", "9817274587", "11600066237", "9817296324"]; // DETERGENT IDs from user
-        // 1. 세제 제품 판별
-        const isDetergent = detergentKeywords.some(k => fullLower.includes(k.toLowerCase())) || detergentIds.some(id => full.includes(id));
-        // 2. 스킨케어 제품 판별
-        const isSkincare = skincareKeywords.some(k => fullLower.includes(k.toLowerCase())) || skincareIds.some(id => full.includes(id));
-        // 3. 물티슈 직접 명시
-        const hasDirectWipes = fullLower.includes("물티슈") || fullLower.includes("물 티슈") || fullLower.includes("비데티슈") || fullLower.includes("비데 티슈") || fullLower.includes("손입물티슈") || fullLower.includes("손입티슈");
-        // 판정 우선순위
-        if (isSkincare && !isDetergent) return "SKINCARE";
-        if (isDetergent) return "DETERGENT";
-        if (hasDirectWipes) return "WIPES";
-        const isWipesLine = wipesKeywords.some(k => fullLower.includes(k.toLowerCase()));
-        if (isWipesLine) return "WIPES";
-        // 기본값: 물티슈
-        return "WIPES";
+    function classifyProductCategory(prodName, optionInfo = "") {
+        const name = prodName.toLowerCase().replace(/\s+/g, "");
+        const option = optionInfo.toLowerCase().replace(/\s+/g, "");
+        const matches = (value, keywords) => keywords.some(keyword => value.includes(keyword.replace(/\s+/g, "")));
+        const skincare = matches(name, skincareKeywords);
+        const detergent = matches(name, detergentKeywords);
+        const wipes = matches(name, wipesKeywords);
+        const skincareOption = matches(option, skincareKeywords);
+        const detergentOption = matches(option, detergentKeywords);
+
+        if (skincare && !detergent && !wipes && !detergentOption) return "SKINCARE";
+        if (detergent && !skincare && !wipes && !skincareOption) return "DETERGENT";
+        if (wipes && !skincare && !detergent && !skincareOption && !detergentOption) return "WIPES";
+        return null;
     }
-        
-
-
 
     // 강력 부정어 및 컴플레인 사전 (전면 보강)
     const badWords = [
@@ -1571,6 +1406,23 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         "재구매는 안", "재구매 안", "재구매 의사 없", "다시 안", "효과 없", "효과가 없", "효과는 없", "효과 못", "효과가 안"
     ];
 
+    function isEligibleReview(score, reviewText) {
+        if (![3, 4, 5].includes(score) || !reviewText) return false;
+        if (/(?:\.{3}|…)$/u.test(reviewText)) return false;
+
+        const text = reviewText.replace(/\s+/g, " ");
+        if (badWords.some(word => text.includes(word))) return false;
+        if (/만족스럽지|만족하지\s*않|불만족|좋지는?\s*않|좋지\s*못|추천하지\s*않|추천\s*안|(?:마음|맘)에\s*(?:안\s*들|들지\s*않)|기대\s*(?:이하|만큼은?\s*아니)/u.test(text)) {
+            return false;
+        }
+        if (score === 3 && (Array.from(text.replace(/\s/g, "")).length < 5 ||
+            /보통|무난|그럭저럭|나쁘지|긴\s*(하지만|한데)|지만|다만/u.test(text))) return false;
+
+        const positive = /좋아요|좋네요|좋습니다|좋았|만족|추천해|추천합니다|잘\s*(?:쓰|쓸|사용|닦)|(?:마음|맘)에\s*들|배송(?:이|도)?\s*빠르|부드러워|촉촉해|최고|훌륭|정착/u;
+        if (positive.test(text)) return true;
+        return score >= 4 && /굿|재구매|늘\s*쓰|항상\s*(?:쓰|사|구매)|꾸준히\s*(?:쓰|사용|구매)|믿고\s*(?:쓰|사|구매)|또\s*(?:살|시킬|구매)/u.test(text);
+    }
+
     // 분석 버튼 클릭 핸들러
     const analyzeBtn = panel.querySelector("#bebesup-analyze-btn");
     analyzeBtn.onclick = async () => {
@@ -1583,8 +1435,6 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         analyzeBtn.innerText = "⏳ 전수 분석 중...";
 
         const { scoreColId, prodColId, contentColId } = api ? resolveAgGridCols(api) : {};
-        const { scoreColIdx, prodColIdx, contentColIdx } = reviewInfo.table ? resolveTableColIndexes(reviewInfo.table) : {};
-
         const reviews = [];
         if (api && typeof api.forEachNode === "function") {
             api.forEachNode(node => {
@@ -1608,7 +1458,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             const globalReviewList = getGlobalReviewList(reviewInfo.doc);
             const { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx } = reviewInfo.table ? resolveTableColIndexes(reviewInfo.table) : {};
             reviewInfo.rows.forEach((tr, idx) => {
-                const rowData = extractSmartStoreRowData(tr, idx, { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx }, globalReviewList);
+                const rowData = extractSmartStoreRowData(tr, { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx }, globalReviewList);
                 const score = rowData.score;
                 const prodName = rowData.prodName || "베베숲 제품";
                 const text = rowData.reviewText;
@@ -1748,8 +1598,6 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
         // ag-Grid 컬럼 및 HTML Table 인덱스 동적 해석
         const { scoreColId, prodColId, optionColId, contentColId, replyColId } = api ? resolveAgGridCols(api) : {};
-        const { scoreColIdx, prodColIdx, optionColIdx, contentColIdx, replyColIdx } = reviewInfo.table ? resolveTableColIndexes(reviewInfo.table) : {};
-
         // 기존 선택 초기화 (오직 그리드/테이블 행 내부만 초기화하여 상단 검색조건 100% 보호)
         if (api && typeof api.deselectAll === "function") {
             try { api.deselectAll(); } catch(e) {}
@@ -1771,17 +1619,10 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         let skippedBad = 0;
         let skippedAnswered = 0;
         let skippedCategory = 0;
-        let firstSkippedProduct = "";
         const currentBatchSigs = [];
 
         // 전자동 연속 실행 모드는 50개(최대 개수), 테스트용(1회등록/눈으로확인)은 5개로 제한!
         const BATCH_TARGET_LIMIT = (mode === "ONCE_REAL" || mode === "TEST") ? 5 : 50;
-
-        // 스마트스토어 상단 검색창에 판매자가 이미 입력한 검색어/조건 감지
-        const topSearchInfo = getSmartStoreTopSearchInfo();
-        if (isTestMode && topSearchInfo.combined) {
-            console.log(`%c[스마트스토어 상단 검색조건 감지]: "${topSearchInfo.combined}" (세제:${topSearchInfo.isTopDetergent}, 스킨:${topSearchInfo.isTopSkincare})`, "color: #00796b; font-weight: bold;");
-        }
 
         if (api && typeof api.forEachNode === "function") {
             api.forEachNode(node => {
@@ -1789,7 +1630,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 const d = node.data || {};
                 const targetDoc = reviewInfo.doc || document;
                 const rowEl = targetDoc.querySelector(`.ag-row[row-id="${node.id}"], .ag-row[row-index="${node.rowIndex}"]`);
-                const rowText = rowEl ? (rowEl.innerText || "").replace(/\s+/g, " ") : JSON.stringify(d);
+                const rowText = (rowEl?.innerText || "").replace(/\s+/g, " ");
 
                 // 1. 이번 세션에서 이미 처리된 서명이면 무조건 제외
                 const sig = getRowSignature(d) || (rowEl ? getRowSignature(rowEl) : "");
@@ -1801,7 +1642,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 // 2. 답글여부 사전 검증 (이미 작성된 리뷰 제외)
                 if (replyColId) {
                     const colVal = String(d[replyColId] || "").trim();
-                    if (colVal !== "N" && colVal !== "" && (!colVal.startsWith("N") || colVal.includes("Y") || colVal.includes("완료") || colVal.includes("등록"))) {
+                    if (/^(?:Y|답글?완료|답변완료|등록완료|등록)$/i.test(colVal.replace(/\s+/g, ""))) {
                         skippedAnswered++;
                         return;
                     }
@@ -1817,79 +1658,18 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     return;
                 }
 
-                // 3. 평점(1~5점) 정밀 추출 및 엄격 차단
                 const score = extractReviewScore(d, rowEl, scoreColId, -1, api, node);
-
-                // 🚨 1~2점 저평점 리뷰는 100% 무조건 제외 (절대 자동답글 금지)
-                if (score <= 2) {
+                const reviewText = extractReviewContent(d, rowEl, contentColId, -1, api, node);
+                if (!isEligibleReview(score, reviewText)) {
                     skippedBad++;
                     return;
                 }
 
-                // 4. 리뷰 본문 정밀 추출
-                const reviewText = extractReviewContent(d, rowEl, contentColId, -1, api, node) || rowText;
-
-                // 🚨 은닉 불만 방지: 본문이 말줄임표(...)로 끝나고 잘려있는 3~4점 리뷰는 뒷부분 불만 위험이 있으므로 안전 제외
-                const isTruncated = reviewText.endsWith("...") || reviewText.endsWith("…");
-                if (isTruncated && score <= 4) {
-                    skippedBad++;
-                    return;
-                }
-
-                // 5. 부정어/결함/주의 키워드 정밀 검사
-                const matchedBad = badWords.filter(w => reviewText.includes(w) || rowText.includes(w));
-
-                // 🚨 3점 리뷰는 엄격 검사: 불만/애매/초단문 표현이 1개라도 있으면 100% 제외!
-                if (score === 3) {
-                    if (matchedBad.length > 0 || reviewText.length < 5) {
-                        skippedBad++;
-                        return;
-                    }
-                } else {
-                    // 4~5점 리뷰: 불만 키워드 감지 시 즉시 제외
-                    if (matchedBad.length > 0) {
-                        skippedBad++;
-                        return;
-                    }
-                }
-
-                // 6. 상품명 & 옵션명 & 행 텍스트 종합 카테고리 분석
-                const extractedProd = extractProductName(d, rowEl, prodColId, -1, api, node);
+                const prodName = extractProductName(d, rowEl, prodColId, -1, api, node);
                 const optionInfo = extractOptionInfo(d, rowEl, optionColId, -1, api, node);
-                const rowClean = reviewText ? rowText.replace(reviewText, " ") : rowText;
-
-                // 상품명 + 옵션 + (고객 리뷰 본문만 제거된) 행 텍스트 전체를 결합하여 전방위 검사
-                const fullProductInfo = `${extractedProd} ${optionInfo} ${rowClean}`.trim();
-                const detectedCat = classifyProductCategory(fullProductInfo);
-
-                if (category === "SKINCARE") {
-                    const isSkinMatch = (detectedCat === "SKINCARE") || 
-                                        skincareKeywords.some(k => fullProductInfo.toLowerCase().includes(k.toLowerCase())) ||
-                                        (topSearchInfo.isTopSkincare && detectedCat !== "DETERGENT");
-                    if (!isSkinMatch) {
-                        if (isTestMode) console.log(`%c[스킵 - 스킨케어 상품 아님 (판정: ${detectedCat})] 정보: "${fullProductInfo.slice(0, 50)}..."`, "color: #7b1fa2;");
-                        if (!firstSkippedProduct) firstSkippedProduct = fullProductInfo.slice(0, 60);
-                        skippedCategory++;
-                        return;
-                    }
-                } else if (category === "DETERGENT") {
-                    const isDetMatch = (detectedCat === "DETERGENT") || 
-                                       detergentKeywords.some(k => fullProductInfo.toLowerCase().includes(k.toLowerCase())) ||
-                                       (topSearchInfo.isTopDetergent && detectedCat !== "SKINCARE");
-                    if (!isDetMatch) {
-                        if (isTestMode) console.log(`%c[스킵 - 세제 상품 아님 (판정: ${detectedCat})] 정보: "${fullProductInfo.slice(0, 50)}..."`, "color: #7b1fa2;");
-                        if (!firstSkippedProduct) firstSkippedProduct = fullProductInfo.slice(0, 60);
-                        skippedCategory++;
-                        return;
-                    }
-                } else if (category === "WIPES") {
-                    // 물티슈(전라인): 스킨케어나 세제 상품은 100% 배제!
-                    if (detectedCat === "SKINCARE" || detectedCat === "DETERGENT") {
-                        if (isTestMode) console.log(`%c[스킵 - 물티슈 외 타제품(${detectedCat})] 정보: "${fullProductInfo.slice(0, 50)}..."`, "color: #7b1fa2;");
-                        if (!firstSkippedProduct) firstSkippedProduct = fullProductInfo.slice(0, 60);
-                        skippedCategory++;
-                        return;
-                    }
+                if (classifyProductCategory(prodName, optionInfo) !== category) {
+                    skippedCategory++;
+                    return;
                 }
 
                 // 선별 통과! ag-Grid 네이티브 선택
@@ -1917,8 +1697,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 const tr = reviewInfo.rows[rowIndex];
 
                 // 행별 원본 데이터(상품명, 옵션명, 본문원문, 평점, 답글여부) 전방위 정밀 추출
-                const rowData = extractSmartStoreRowData(tr, rowIndex, { scoreColIdx, prodColIdx, optionColIdx, contentColIdx, replyColIdx, reviewNoColIdx }, globalReviewList);
-                const { reviewNo, prodName, optionInfo = "", reviewText, score, isAnswered, rowText } = rowData;
+                const rowData = extractSmartStoreRowData(tr, { scoreColIdx, prodColIdx, optionColIdx, contentColIdx, replyColIdx, reviewNoColIdx }, globalReviewList);
+                const { reviewNo, prodName, optionInfo, reviewText, score, isAnswered } = rowData;
 
                 const sig = reviewNo || getRowSignature(tr);
                 if (sig && processedSignatures.has(sig)) {
@@ -1933,74 +1713,16 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     continue;
                 }
 
-                // 2. 🚨 1~2점 저평점 리뷰는 100% 무조건 제외 (절대 자동답글 금지)
-                if (score <= 2) {
-                    if (isTestMode) console.log(`%c[스킵 - 저평점 ★${score}] ${reviewText.slice(0, 30)}...`, "color: #e53935; font-weight: bold;");
+                if (!isEligibleReview(score, reviewText)) {
+                    if (isTestMode) console.log("[제외] 평점 또는 리뷰 본문 기준 미충족", { reviewNo, score });
                     skippedBad++;
                     continue;
                 }
 
-                // 3. 🚨 은닉 불만 방지: 본문이 말줄임표(...)로 끝나고 잘려있는 3~4점 리뷰는 뒷부분 불만 위험이 있으므로 안전 제외
-                const isTruncated = reviewText.endsWith("...") || reviewText.endsWith("…");
-                if (isTruncated && score <= 4) {
-                    if (isTestMode) console.log(`%c[스킵 - ★${score} 말줄임표(...) 불만 은닉주의] ${reviewText.slice(0, 30)}...`, "color: #f57c00; font-weight: bold;");
-                    skippedBad++;
+                if (classifyProductCategory(prodName, optionInfo) !== category) {
+                    if (isTestMode) console.log("[제외] 선택한 상품군과 불일치", { reviewNo, prodName });
+                    skippedCategory++;
                     continue;
-                }
-
-                // 4. 부정어/결함/주의 키워드 정밀 검사
-                const checkTarget = reviewText + " " + rowText + " " + prodName + " " + optionInfo;
-                const matchedBad = badWords.filter(w => checkTarget.includes(w));
-
-                // 🚨 3점 리뷰는 엄격 검사: 불만/애매/초단문 표현이 1개라도 있으면 100% 제외!
-                if (score === 3) {
-                    if (matchedBad.length > 0 || reviewText.length < 5) {
-                        if (isTestMode) console.log(`%c[스킵 - 3점 불만/단문 키워드: "${matchedBad.join(', ')}"] ${reviewText.slice(0, 30)}...`, "color: #d32f2f;");
-                        skippedBad++;
-                        continue;
-                    }
-                } else {
-                    // 4~5점 리뷰: 불만 키워드 감지 시 즉시 제외
-                    if (matchedBad.length > 0) {
-                        if (isTestMode) console.log(`%c[스킵 - 불만/결함 키워드: "${matchedBad.join(', ')}"] ★${score} | 상품: ${prodName || '미지정'} | ${reviewText.slice(0, 30)}...`, "color: #d32f2f; font-weight: bold;");
-                        skippedBad++;
-                        continue;
-                    }
-                }
-
-                // 5. 상품명 & 옵션명 정밀 분석 및 카테고리 엄격 분리
-                let validProdName = prodName;
-                // Build comprehensive product info for classification
-                const rowClean = reviewText ? rowText.replace(reviewText, " ") : rowText;
-                const fullProductInfo = `${validProdName} ${optionInfo} ${rowClean}`.trim();
-                const detectedCat = classifyProductCategory(fullProductInfo);
-                if (!validProdName) {
-                    const rowClean = reviewText ? rowText.replace(reviewText, " ") : rowText;
-                    validProdName = rowClean;
-                }
-
-
-                if (category === "SKINCARE") {
-                    const allow = (detectedCat === "SKINCARE") || (topSearchInfo.isTopSkincare && detectedCat !== "DETERGENT");
-                    if (!allow) {
-                        if (isTestMode) console.log(`%c[스킵 - 스킨케어 상품 아님 (판정: ${detectedCat})] 상품: "${prodName || '알수없음'}" / 옵션: "${optionInfo}"`, "color: #7b1fa2;");
-                        skippedCategory++;
-                        continue;
-                    }
-                } else if (category === "DETERGENT") {
-                    const allow = (detectedCat === "DETERGENT") || (topSearchInfo.isTopDetergent && detectedCat !== "SKINCARE");
-                    if (!allow) {
-                        if (isTestMode) console.log(`%c[스킵 - 세제 상품 아님 (판정: ${detectedCat})] 상품: "${prodName || '알수없음'}" / 옵션: "${optionInfo}"`, "color: #7b1fa2;");
-                        skippedCategory++;
-                        continue;
-                    }
-                } else if (category === "WIPES") {
-                    // 물티슈(전라인): 스킨케어나 세제 상품은 100% 배제!
-                    if (detectedCat === "SKINCARE" || detectedCat === "DETERGENT") {
-                        if (isTestMode) console.log(`%c[스킵 - 물티슈 외 타제품(${detectedCat})] 상품: "${prodName || '알수없음'}" / 옵션: "${optionInfo}"`, "color: #7b1fa2;");
-                        skippedCategory++;
-                        continue;
-                    }
                 }
 
                 // 6. 체크박스 체크 (실제 사용자 클릭 시뮬레이션으로 스마트스토어 모델 연동)
@@ -2053,95 +1775,65 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         replyBtn.focus();
         replyBtn.click();
 
-        return new Promise((resolve) => {
-            let checkAttempts = 0;
-            const fillInterval = setInterval(async () => {
-                checkAttempts++;
+        let modalInfo;
+        for (let attempt = 0; attempt < 30; attempt++) {
+            modalInfo = findReplyModalInfo(reviewInfo.doc);
+            if (modalInfo) break;
+            await sleep(200);
+        }
+        if (!modalInfo) {
+            if (isTestMode) console.groupEnd();
+            return { status: "NO_REPLY_FIELD" };
+        }
 
-                const modalInfo = findReplyModalInfo(reviewInfo.doc);
-                if (modalInfo && modalInfo.textarea) {
-                    clearInterval(fillInterval);
-                    const replyBox = modalInfo.textarea;
-                    const modal = modalInfo.modal;
-                    const targetDoc = modalInfo.doc;
+        const { modal, textarea: replyBox, doc } = modalInfo;
+        const nativeSetter = Object.getOwnPropertyDescriptor(doc.defaultView.HTMLTextAreaElement.prototype, "value")?.set;
+        if (!nativeSetter) {
+            if (isTestMode) console.groupEnd();
+            return { status: "NO_REPLY_FIELD" };
+        }
+        nativeSetter.call(replyBox, replyMsg);
+        replyBox.dispatchEvent(new Event("input", { bubbles: true }));
+        replyBox.dispatchEvent(new Event("change", { bubbles: true }));
+        if (isTestMode) {
+            console.groupEnd();
+            return { status: "TEST_DONE", count: selectedCount };
+        }
 
-                    replyBox.focus();
+        await sleep(800);
+        if (mode === "AUTO_ALL" && sessionStorage.getItem("bebesup_auto_loop") !== "true") {
+            return { status: "STOPPED" };
+        }
 
-                    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
-                    if (nativeSetter) {
-                        nativeSetter.call(replyBox, replyMsg);
-                    } else {
-                        replyBox.value = replyMsg;
-                    }
-                    try {
-                        document.execCommand('selectAll', false, null);
-                        document.execCommand('insertText', false, replyMsg);
-                    } catch(e) {}
-                    if (replyBox.value !== replyMsg) {
-                        replyBox.value = replyMsg;
-                    }
+        const currentModalInfo = findReplyModalInfo(doc);
+        if (currentModalInfo?.textarea !== replyBox || replyBox.value !== replyMsg) {
+            return { status: "NO_REPLY_FIELD" };
+        }
 
-                    replyBox.dispatchEvent(new Event('input', { bubbles: true }));
-                    replyBox.dispatchEvent(new Event('change', { bubbles: true }));
-                    replyBox.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ', code: 'Space' }));
+        const submitBtn = Array.from(modal.querySelectorAll("button, input[type='button'], input[type='submit'], [role='button']"))
+            .find(btn => isVisible(btn) && !btn.disabled && btn.getAttribute("aria-disabled") !== "true" &&
+                /^(?:등록|저장|답글등록)$/.test((btn.innerText || btn.value || "").replace(/\s+/g, "")));
+        if (!submitBtn) return { status: "NO_SUBMIT_BUTTON" };
 
-                    if (mode === "TEST") {
-                        console.log("%c✍️ [2단계 성공] 모달 팝업 감지 완료 -> [답글 내용] 입력창에 공식 맞춤 문구 주입 성공!", "color: #00897b; font-weight: bold;");
-                        console.log("%c" + replyMsg, "color: #2e7d32; background: #f1f8e9; padding: 8px; border-left: 4px solid #00b050; font-size: 11px; font-family: monospace;");
-                        console.log("%c🛡️ [안전 시뮬레이션 완료] 실제 [등록] 버튼은 누르지 않고 팝업창을 그대로 열어둔 상태로 대기합니다. 화면의 체크박스와 모달 내용을 직접 눈으로 확인해 보세요!", "color: #e65100; font-weight: bold; background: #fff3e0; padding: 8px; font-size: 12px; border-radius: 4px;");
-                        console.groupEnd();
+        const docs = [doc, document];
+        const previousNotices = getVisibleReplyNotices(docs);
+        submitBtn.click();
+        const { status, notice } = await waitForReplyRegistration(docs, previousNotices, selectedCount);
+        if (status !== "REGISTERED") return { status };
 
-                        runBtn.innerText = `✅ [${catLabel}] ${selectedCount}개 확인완료`;
-                        setTimeout(() => { runBtn.innerText = "▶ 자동 실행 시작"; }, 4000);
-                        return resolve({ status: "TEST_DONE", count: selectedCount });
-                    }
-
-                    await sleep(800);
-                    const submitCandidates = Array.from(modal.querySelectorAll("button, a, input[type='button'], input[type='submit'], [role='button'], .btn"));
-                    const submitBtn = submitCandidates.find(b => {
-                        const txt = (b.innerText || b.value || b.textContent || "").trim().replace(/\s+/g, "");
-                        return txt === "등록" || txt === "저장" || txt === "답글등록" || (txt.includes("등록") && !txt.includes("미등록"));
-                    });
-
-                    if (submitBtn) {
-                        submitBtn.focus();
-                        submitBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-                        submitBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-                        submitBtn.click();
-
-                        // 확인 팝업 자동 승인 (답글 등록 확인창 -> 완료 확인창 등 최대 3단계)
-                        for (let step = 0; step < 3; step++) {
-                            await sleep(800);
-                            for (const d of [targetDoc, document]) {
-                                if (!d) continue;
-                                const confirmCandidates = Array.from(d.querySelectorAll("div.modal button, [role='dialog'] button, .btn_layer button, button, a.btn, input[type='button']"));
-                                const confirmBtn = confirmCandidates.find(b => {
-                                    if (b.closest("#bebesup-helper-panel")) return false;
-                                    if (b === submitBtn) return false;
-                                    const txt = (b.innerText || b.value || b.textContent || "").trim().replace(/\s+/g, "");
-                                    return txt === "확인" || txt === "예" || txt === "네" || txt === "승인" || txt === "닫기";
-                                });
-                                if (confirmBtn) {
-                                    confirmBtn.click();
-                                    break;
-                                }
-                            }
-                        }
-
-                        await sleep(1000);
-                        // 등록 완료된 서명들을 영구 제외 목록에 추가
-                        for (const s of currentBatchSigs) { if (s) processedSignatures.add(s); }
-                        return resolve({ status: "REGISTERED", count: selectedCount });
-                    } else {
-                        return resolve({ status: "TEST_DONE", count: selectedCount });
-                    }
-                } else if (checkAttempts > 30) {
-                    clearInterval(fillInterval);
-                    return resolve({ status: "TIMEOUT" });
-                }
-            }, 200);
-        });
+        const closeBtn = Array.from(notice.querySelectorAll("button, input[type='button'], [role='button']"))
+            .find(btn => isVisible(btn) && !btn.disabled && /^(?:확인|닫기)$/.test((btn.innerText || btn.value || "").trim()));
+        if (closeBtn) closeBtn.click();
+        for (const signature of currentBatchSigs) processedSignatures.add(signature);
+        return { status, count: selectedCount };
     }
+
+    const batchErrorMessages = {
+        NO_REPLY_FIELD: "일괄 답글 창의 두 번째 입력칸을 확인하지 못했습니다.",
+        NO_SUBMIT_BUTTON: "일괄 답글 창에서 사용할 수 있는 등록 버튼을 찾지 못했습니다.",
+        REGISTRATION_FAILED: "스마트스토어에서 등록 실패 또는 일부 처리 메시지를 표시했습니다. 리뷰 목록에서 실제 등록 결과를 확인해 주세요.",
+        REGISTRATION_UNVERIFIED: "스마트스토어의 등록 완료를 확인하지 못했습니다. 리뷰 목록에서 실제 등록 결과를 확인한 뒤 다시 실행해 주세요."
+    };
 
     // 전자동 연속 실행 루프 (페이지 전체 새로고침 없이 in-page [검색]을 통해 50개씩 논스톱 연속 처리)
     async function runAutoLoop(category) {
@@ -2202,7 +1894,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     panel.style.border = "2px solid #00b050";
                     runBtn.style.background = "#00b050";
                     runBtn.innerText = "▶ 자동 실행 시작";
-                    alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않아 0건 처리되었습니다.\n(총 ${result.skippedCategory}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 실행해 주세요!\n2. 전체 상품에 등록하시려면 [🌿 전라인 공통(물티슈 등)]을 선택해 주세요.`);
+                    alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않아 0건 처리되었습니다.\n(총 ${result.skippedCategory}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 실행해 주세요!\n2. [전라인 공통(물티슈)]은 물티슈 상품에만 적용됩니다.`);
                     return;
                 }
 
@@ -2222,15 +1914,19 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     continue;
                 }
 
-                // 진짜 대상 리뷰가 0개임 -> 완료
                 sessionStorage.removeItem("bebesup_auto_loop");
                 panel.style.border = "2px solid #00b050";
                 runBtn.style.background = "#00b050";
                 runBtn.innerText = "▶ 자동 실행 시작";
 
+                if (checkResult.status !== "EMPTY" && checkResult.status !== "EMPTY_CATEGORY") {
+                    if (checkResult.status !== "STOPPED") alert(batchErrorMessages[checkResult.status] || `⚠️ 처리 상태: ${checkResult.status}`);
+                    return;
+                }
+
                 const finalSkippedCat = checkResult.skippedCategory || result.skippedCategory || 0;
                 if (totalSuccess === 0 && finalSkippedCat > 0) {
-                    alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않아 0건 처리되었습니다.\n(총 ${finalSkippedCat}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 실행해 주세요!\n2. 전체 상품에 등록하시려면 [🌿 전라인 공통(물티슈 등)]을 선택해 주세요.`);
+                    alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않아 0건 처리되었습니다.\n(총 ${finalSkippedCat}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 실행해 주세요!\n2. [전라인 공통(물티슈)]은 물티슈 상품에만 적용됩니다.`);
                 } else {
                     alert(`🎉 [베베숲 AI] 모든 미답변 칭찬 리뷰 답글 등록 완료!\n\n총 ${totalSuccess}건의 리뷰에 답글이 성공적으로 등록되었습니다.\n(남은 불만/하자/먼지/아토피 리뷰는 수동 확인을 위해 안전하게 보존되었습니다.)`);
                 }
@@ -2258,24 +1954,26 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 panel.style.border = "2px solid #00b050";
                 runBtn.style.background = "#00b050";
                 runBtn.innerText = "▶ 자동 실행 시작";
-                alert(`⚠️ 처리 상태: ${result.status}`);
+                if (result.status !== "STOPPED") alert(batchErrorMessages[result.status] || `⚠️ 처리 상태: ${result.status}`);
                 return;
             }
         }
     }
 
     // 실행 버튼 클릭
+    let runInProgress = false;
     runBtn.onclick = async () => {
+        if (sessionStorage.getItem("bebesup_auto_loop") === "true") {
+            sessionStorage.removeItem("bebesup_auto_loop");
+            panel.style.border = "2px solid #00b050";
+            runBtn.style.background = "#00b050";
+            runBtn.innerText = "▶ 자동 실행 시작";
+            alert(`⏹ 자동 작업이 중지되었습니다.\n(현재까지 총 ${totalSuccess}건 완료됨)`);
+            return;
+        }
+        if (runInProgress) return;
+        runInProgress = true;
         try {
-            if (sessionStorage.getItem("bebesup_auto_loop") === "true") {
-                sessionStorage.removeItem("bebesup_auto_loop");
-                panel.style.border = "2px solid #00b050";
-                runBtn.style.background = "#00b050";
-                runBtn.innerText = "▶ 자동 실행 시작";
-                alert(`⏹ 자동 작업이 중지되었습니다.\n(현재까지 총 ${totalSuccess}건 완료됨)`);
-                return;
-            }
-
             const category = catSelect.value;
             const mode = modeSelect.value;
             const catLabel = getCategoryLabel(category);
@@ -2327,7 +2025,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     alert("⚠️ 스마트스토어에서 선택된 리뷰를 인식하지 못했습니다.\n체크박스를 수동으로 1개 선택해 보신 뒤 다시 시도해 주세요.");
                 } else if (result.status === "EMPTY" || result.status === "EMPTY_CATEGORY") {
                     if (result.skippedCategory > 0) {
-                        alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않았습니다.\n(총 ${result.skippedCategory}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 다시 실행해 주세요!\n2. 전체 상품에 등록하시려면 [🌿 전라인 공통(물티슈 등)]을 선택해 주세요.`);
+                        alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않았습니다.\n(총 ${result.skippedCategory}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 다시 실행해 주세요!\n2. [전라인 공통(물티슈)]은 물티슈 상품에만 적용됩니다.`);
                     } else {
                         alert("ℹ️ 현재 화면에 답글 대상 칭찬 리뷰가 없습니다.\n상단에서 기간 선택 후 [검색]을 먼저 진행해 주세요!");
                     }
@@ -2336,7 +2034,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 } else if (result.status === "TIMEOUT") {
                     alert("⚠️ 답글 작성 창을 여는 중 시간이 초과되었습니다.\n스마트스토어 화면을 새로고침(Ctrl+F5) 후 다시 시도해 주세요.");
                 } else {
-                    alert(`⚠️ 상태: ${result.status}`);
+                    alert(batchErrorMessages[result.status] || `⚠️ 상태: ${result.status}`);
                 }
             } else {
                 // TEST 모드 (눈으로 확인 모드)
@@ -2349,7 +2047,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     alert("⚠️ 스마트스토어에서 선택된 리뷰를 인식하지 못했습니다.\n체크박스를 수동으로 1개 선택해 보신 뒤 다시 시도해 주세요.");
                 } else if (res.status === "EMPTY" || res.status === "EMPTY_CATEGORY") {
                     if (res.skippedCategory > 0 && res.skippedBad === 0) {
-                        alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않았습니다.\n(총 ${res.skippedCategory}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 다시 실행해 주세요!\n2. 전체 상품에 등록하시려면 [🌿 전라인 공통(물티슈 등)]을 선택해 주세요.`);
+                        alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않았습니다.\n(총 ${res.skippedCategory}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 다시 실행해 주세요!\n2. [전라인 공통(물티슈)]은 물티슈 상품에만 적용됩니다.`);
                     } else if (res.skippedAnswered > 0) {
                         alert(`ℹ️ 현재 화면의 리뷰(${res.skippedAnswered}건)는 모두 이미 답글이 작성된 건입니다.\n\n상단 검색 조건에서 [답글여부: 미등록]으로 변경 후 [검색]을 진행해 주세요.`);
                     } else if (res.skippedBad > 0 || res.skippedCategory > 0) {
@@ -2362,12 +2060,14 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 } else if (res.status === "TIMEOUT") {
                     alert("⚠️ 답글 작성 창을 여는 중 시간이 초과되었습니다.\n스마트스토어 화면을 새로고침(Ctrl+F5) 후 다시 시도해 주세요.");
                 } else {
-                    alert(`⚠️ 처리 결과: ${res.status}`);
+                    alert(batchErrorMessages[res.status] || `⚠️ 처리 결과: ${res.status}`);
                 }
             }
         } catch(err) {
             runBtn.innerText = "▶ 자동 실행 시작";
             alert(`⚠️ 실행 중 오류가 발생했습니다: ${err.message || err}`);
+        } finally {
+            runInProgress = false;
         }
     };
 
