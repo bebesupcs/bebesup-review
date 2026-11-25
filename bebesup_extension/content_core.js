@@ -1498,7 +1498,32 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
     // 상품명 및 옵션명을 종합 분석하여 카테고리를 엄격 판정
     // 반환값: "SKINCARE" | "DETERGENT" | "WIPES"
-    function classifyProductCategory(full = "") {
+    function classifyProductCategory(full = "", prodName = "") {
+  const fullLower = full.toLowerCase();
+  const nameLower = prodName.toLowerCase();
+  // Known IDs (from user)
+  const skincareIds = ["13810363562", "11809705069"]; // SKINCARE IDs
+  const detergentIds = ["12481218458", "12481188250", "6882224318", "9817274587", "11600066237", "9817296324"]; // DETERGENT IDs
+
+  // ID 기반 우선 판정 (대소문자 구분 없이)
+  const isDetergentById = detergentIds.some(id => fullLower.includes(id.toLowerCase()));
+  const isSkincareById = skincareIds.some(id => fullLower.includes(id.toLowerCase()));
+
+  // 키워드 기반 판정 – 기존 키워드 리스트 사용
+  const isDetergentByKw = detergentKeywords.some(k => nameLower.includes(k.toLowerCase())) || detergentKeywords.some(k => fullLower.includes(k.toLowerCase()));
+  const isSkincareByKw = skincareKeywords.some(k => nameLower.includes(k.toLowerCase())) || skincareKeywords.some(k => fullLower.includes(k.toLowerCase()));
+
+  // 직접 물티슈 명시
+  const hasDirectWipes = fullLower.includes("물티슈") || fullLower.includes("손입물티슈");
+
+  // 우선순위: ID > 제품명 키워드 > 전체 문자열 키워드
+  if (isSkincareById && !isDetergentById) return "SKINCARE";
+  if (isDetergentById) return "DETERGENT";
+  if (isSkincareByKw && !isDetergentByKw) return "SKINCARE";
+  if (isDetergentByKw) return "DETERGENT"; // note typo will be corrected later
+  if (hasDirectWipes) return "WIPES";
+  return "";
+}
         const fullLower = full.toLowerCase();
         // Known product IDs for troubleshooting
         const skincareIds = ["13810363562", "11809705069"]; // SKINCARE IDs from user
