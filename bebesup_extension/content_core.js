@@ -1,6 +1,6 @@
 // ========================================================
 // 🌿 베베숲(Bebesup) 스마트스토어 전용 답글 & 실시간 분석 올인원 v9
-// - [🚀 전자동 연속 실행]: 버튼 1번으로 0건 될 때까지 끝장 완주
+// - 상품군별 미답글 칭찬 리뷰를 골라 일괄 답글 작성창을 엽니다.
 // - [📊 실시간 AI 분석]: 엑셀 다운 없이 스마트스토어 리뷰 실시간 전수 분석 & 리포트 모달 팝업 & CSV 원클릭 저장
 // - 정책/멤버십/쿠폰/서비스 불만 전수 차단
 // - 스킨케어/성분 민감 키워드(아토피 등) 차단
@@ -8,91 +8,12 @@
 // ========================================================
 
 // ========================================================
-// 🌐 스마트스토어 내부 API 네트워크 인터셉터 (실시간 리뷰 데이터 패킷 스니퍼)
-// ========================================================
-window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new Map();
-
-(function hookSmartStoreNetwork() {
-    if (window.__BEBESUP_HOOKED__) return;
-    window.__BEBESUP_HOOKED__ = true;
-
-    function extractReviewsFromApiData(data) {
-        if (!data || typeof data !== 'object') return;
-        function scan(obj, depth = 0) {
-            if (!obj || depth > 6) return;
-            if (Array.isArray(obj)) {
-                for (const item of obj) {
-                    if (item && typeof item === 'object') {
-                        const id = item.reviewNo || item.reviewId || item.id || item.productOrderReviewNo;
-                        const prod = item.productName || item.channelProductName || item.originProduct?.productName || item.itemTitle || item.productTitle;
-                        const content = item.reviewContent || item.content || item.reviewBody;
-                        if (id && (prod || content)) {
-                            window.__BEBESUP_API_REVIEWS_MAP__.set(String(id), item);
-                        }
-                    }
-                    scan(item, depth + 1);
-                }
-            } else if (typeof obj === 'object') {
-                for (const k of Object.keys(obj)) {
-                    scan(obj[k], depth + 1);
-                }
-            }
-        }
-        scan(data);
-    }
-
-    // 1. Fetch 인터셉트
-    const originalFetch = window.fetch;
-    if (typeof originalFetch === 'function') {
-        window.fetch = async function(...args) {
-            const response = await originalFetch.apply(this, args);
-            try {
-                const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
-                if (url.includes('review') || url.includes('search') || url.includes('order')) {
-                    const clone = response.clone();
-                    clone.json().then(data => {
-                        extractReviewsFromApiData(data);
-                    }).catch(() => {});
-                }
-            } catch(e) {}
-            return response;
-        };
-    }
-
-    // 2. XMLHttpRequest 인터셉트
-    const origOpen = XMLHttpRequest.prototype.open;
-    const origSend = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-        this.__bebesupUrl = url;
-        return origOpen.call(this, method, url, ...rest);
-    };
-    XMLHttpRequest.prototype.send = function(...args) {
-        this.addEventListener('load', function() {
-            try {
-                const url = this.__bebesupUrl || '';
-                if (url.includes('review') || url.includes('search') || url.includes('order')) {
-                    if (this.responseText && (this.responseText.startsWith('{') || this.responseText.startsWith('['))) {
-                        const data = JSON.parse(this.responseText);
-                        extractReviewsFromApiData(data);
-                    }
-                }
-            } catch(e) {}
-        });
-        return origSend.apply(this, args);
-    };
-})();
-
 (function initBebesupHelper() {
     if (document.getElementById("bebesup-helper-panel")) {
         document.getElementById("bebesup-helper-panel").remove();
     }
 
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-    // 세션 스토리지에서 자동 반복 실행 상태 확인
-    const isAutoLooping = sessionStorage.getItem("bebesup_auto_loop") === "true";
-    const savedCat = sessionStorage.getItem("bebesup_target_cat") || "WIPES";
-    let totalSuccess = Number(sessionStorage.getItem("bebesup_total_success") || 0);
 
     // 1. 상단 배치 & 우측 정렬 앵커 고정 컨트롤 바 생성
     const panel = document.createElement("div");
@@ -103,10 +24,10 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
         right: 220px;
         z-index: 99999999;
         background: #ffffff;
-        border: 2px solid ${isAutoLooping ? "#d32f2f" : "#00b050"};
+        border: 2px solid #00b050;
         padding: 5px 12px;
         border-radius: 30px;
-        box-shadow: 0 4px 18px ${isAutoLooping ? "rgba(211, 47, 47, 0.4)" : "rgba(0, 176, 80, 0.3)"};
+        box-shadow: 0 4px 18px rgba(0, 176, 80, 0.3);
         display: flex;
         align-items: center;
         gap: 8px;
@@ -118,32 +39,25 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
 
     panel.innerHTML = `
         <div id="bebesup-drag-handle" style="display:flex; align-items:center; gap:5px; cursor:move;">
-            <span style="font-size:15px;">${isAutoLooping ? "🔄" : "🌿"}</span>
-            <span style="font-weight:bold; color:${isAutoLooping ? "#d32f2f" : "#00b050"}; font-size:12px; white-space:nowrap;">
-                ${isAutoLooping ? "자동 진행 중" : "베베숲 AI"}
+            <span style="font-size:15px;">🌿</span>
+            <span style="font-weight:bold; color:#00b050; font-size:12px; white-space:nowrap;">
+                베베숲 AI
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.10 (리뷰 선별 및 일괄 등록 검증)
+                v2.8.11 (스마트스토어 리뷰 목록 연동)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
 
         <div id="bebesup-controls" style="display:flex; align-items:center; gap:8px;">
             <select id="bebesup-target-cat" style="font-size:11px; padding:3px 7px; border-radius:15px; border:1px solid #ccc; outline:none; font-weight:bold;">
-                <option value="WIPES" ${savedCat === "WIPES" ? "selected" : ""}>🌿 전라인 공통 (물티슈 등)</option>
-                <option value="SKINCARE" ${savedCat === "SKINCARE" ? "selected" : ""}>💧 스킨케어</option>
-                <option value="DETERGENT" ${savedCat === "DETERGENT" ? "selected" : ""}>🫧 세제</option>
+                <option value="WIPES">🌿 전라인 공통 (물티슈)</option>
+                <option value="SKINCARE">💧 스킨케어</option>
+                <option value="DETERGENT">🫧 세제</option>
             </select>
 
-            <select id="bebesup-run-mode" style="font-size:11px; padding:3px 7px; border-radius:15px; border:1.5px solid #f57c00; color:#e65100; outline:none; font-weight:bold; background:#fff8e1;">
-                <option value="TEST" selected>👀 눈으로 확인 모드 (F12 로그 & 등록 안 누름)</option>
-                <option value="ONCE_REAL">⚡ 1회 5개만 등록 (테스트용 새로고침)</option>
-                <option value="AUTO_ALL">🚀 전자동 연속 실행 (50개씩 끝까지 자동)</option>
-            </select>
-
-            <!-- 실행/중지 버튼 -->
-            <button id="bebesup-run-btn" style="background:${isAutoLooping ? "#d32f2f" : "#00b050"}; color:white; border:none; padding:6px 14px; border-radius:20px; font-size:11px; font-weight:bold; cursor:pointer; transition:all 0.2s; white-space:nowrap;">
-                ${isAutoLooping ? `⏹ 자동 중지 (총 ${totalSuccess}건 완료)` : "▶ 자동 실행 시작"}
+            <button id="bebesup-run-btn" style="background:#00b050; color:white; border:none; padding:6px 14px; border-radius:20px; font-size:11px; font-weight:bold; cursor:pointer; transition:all 0.2s; white-space:nowrap;">
+                ▶ 자동 실행 시작
             </button>
 
             <!-- 📊 실시간 AI 분석 대시보드 버튼 -->
@@ -220,10 +134,29 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
 
         for (const doc of docs) {
             // 1. ag-grid 탐색
-            const agRows = Array.from(doc.querySelectorAll(".ag-center-cols-container .ag-row, .ag-row:not(.ag-header-row)"));
-            if (agRows.length > 0) {
-                const gridTable = doc.querySelector(".ag-root-wrapper, .ag-root, [role='grid'], .ag-theme-balham");
-                return { doc, type: "AG_GRID", table: gridTable, rows: agRows };
+            for (const grid of doc.querySelectorAll(".ag-root-wrapper")) {
+                const columns = new Map();
+                for (const header of grid.querySelectorAll(".ag-header-cell[col-id], [role='columnheader'][col-id]")) {
+                    const label = (header.querySelector(".ag-header-cell-text")?.textContent || header.innerText || "").replace(/\s+/g, "");
+                    columns.set(label, header.getAttribute("col-id"));
+                }
+                if (!["상품명", "리뷰내용", "리뷰글번호", "답글여부"].every(label => columns.has(label)) ||
+                    !["구매자평점", "평점", "별점"].some(label => columns.has(label))) continue;
+
+                const rowParts = new Map();
+                for (const row of grid.querySelectorAll(".ag-row[row-id], .ag-row[row-index]")) {
+                    const key = row.getAttribute("row-id") || row.getAttribute("row-index");
+                    if (!rowParts.has(key)) rowParts.set(key, []);
+                    rowParts.get(key).push(row);
+                }
+                const partsByRow = new Map();
+                for (const parts of rowParts.values()) {
+                    const row = parts.find(part => part.querySelector("input[type='checkbox']")) || parts[0];
+                    partsByRow.set(row, parts);
+                }
+                if (partsByRow.size > 0) {
+                    return { doc, type: "AG_GRID", table: grid, rows: [...partsByRow.keys()], columns, partsByRow };
+                }
             }
 
             // 2. 스마트스토어 리뷰 전용 HTML Table 탐색
@@ -245,6 +178,35 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
         }
 
         return { doc: document, type: "NONE", rows: [] };
+    }
+
+    function extractRenderedGridReview(grid, row) {
+        const cells = new Map();
+        for (const part of grid.partsByRow.get(row)) {
+            for (const cell of part.querySelectorAll(".ag-cell[col-id]")) {
+                cells.set(cell.getAttribute("col-id"), cell);
+            }
+        }
+        const cell = (...labels) => cells.get(labels.map(label => grid.columns.get(label)).find(id => id && cells.has(id)));
+        const read = element => (element?.innerText || element?.textContent || "").trim();
+        const reviewNo = read(cell("리뷰글번호"));
+        const productCell = cell("상품명");
+        const contentCell = cell("리뷰내용");
+        const scoreCell = cell("구매자평점", "평점", "별점");
+        const score = extractReviewScore(null, null, null, -1, null, null, scoreCell);
+        const productLink = productCell?.querySelector("a");
+        const reviewButton = contentCell?.querySelector("button");
+        const prodName = productLink?.getAttribute("title") || read(productLink) || read(productCell);
+        const reviewText = reviewButton?.getAttribute("title") ||
+            reviewButton?.getAttribute("aria-label") || read(reviewButton) || read(contentCell);
+        const replyStatus = read(cell("답글여부")).replace(/\s+/g, "");
+        return {
+            reviewNo: /^\d+$/.test(reviewNo) ? reviewNo : "",
+            score, prodName, reviewText,
+            optionInfo: read(cell("옵션", "옵션명")),
+            isAnswered: /^(?:Y|답글(?:등록|완료)|답변완료|등록(?:완료)?)$/i.test(replyStatus),
+            replyStatusKnown: /^(?:N|Y|(?:답글)?미등록|답글(?:등록|완료)|답변완료|등록(?:완료)?)$/i.test(replyStatus)
+        };
     }
 
     function getGridApi() {
@@ -284,46 +246,13 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
     // ========================================================
     // 🔘 [답글작성] 버튼 탐색기 (테이블 인근 툴바 및 전역/iframe 탐색)
     // ========================================================
-    function findBatchReplyButton(preferredDoc, tableEl) {
-        const docs = [preferredDoc, document];
-        try {
-            const iframes = document.querySelectorAll("iframe, frame");
-            for (let i = 0; i < iframes.length; i++) {
-                try {
-                    const fDoc = iframes[i].contentDocument || iframes[i].contentWindow?.document;
-                    if (fDoc && !docs.includes(fDoc)) docs.push(fDoc);
-                } catch(e) {}
-            }
-        } catch(e) {}
-
-        // 1순위: 테이블 주변/부모 툴바 영역에서 답글작성 버튼 우선 탐색
-        if (tableEl) {
-            let container = tableEl.parentElement;
-            for (let depth = 0; depth < 5 && container; depth++) {
-                const candidates = Array.from(container.querySelectorAll("button, a, input[type='button'], [role='button'], div[class*='btn'], span[class*='btn'], .btn"));
-                const found = candidates.find(b => {
-                    if (b.closest("#bebesup-helper-panel, tbody, tr")) return false;
-                    const txt = (b.innerText || b.textContent || b.value || "").replace(/\s+/g, "");
-                    return txt.includes("답글작성") || (txt.includes("답글") && (txt.includes("작성") || txt.includes("등록")));
-                });
-                if (found) return found;
-                container = container.parentElement;
-            }
-        }
-
-        // 2순위: 모든 문서(iframe 포함) 전역 탐색
-        for (const doc of docs) {
-            if (!doc) continue;
-            const candidates = Array.from(doc.querySelectorAll("button, a, input[type='button'], input[type='submit'], [role='button'], div[class*='btn'], span[class*='btn'], .btn"));
-            const found = candidates.find(b => {
-                if (b.closest("#bebesup-helper-panel, tbody, tr")) return false;
-                const txt = (b.innerText || b.textContent || b.value || "").replace(/\s+/g, "");
-                return txt.includes("답글작성") || (txt.includes("답글") && (txt.includes("작성") || txt.includes("등록")));
-            });
-            if (found) return found;
-        }
-
-        return null;
+    function findBatchReplyButton(doc) {
+        return Array.from(doc.querySelectorAll("button, input[type='button'], [role='button']")).find(button => {
+            if (button.disabled || !isVisible(button) ||
+                button.closest("#bebesup-helper-panel, .ag-row, tbody, tr, [role='dialog'], .modal-content, .n-layer-popup")) return false;
+            const label = (button.innerText || button.value || button.textContent || "").replace(/\s+/g, "");
+            return label === "답글작성" || label === "일괄답글작성";
+        });
     }
 
     // ========================================================
@@ -362,59 +291,11 @@ window.__BEBESUP_API_REVIEWS_MAP__ = window.__BEBESUP_API_REVIEWS_MAP__ || new M
                 const tas = modal.querySelectorAll("textarea");
                 const replyBox = tas[1];
                 if (tas.length === 2 && isVisible(replyBox) && !replyBox.disabled && !replyBox.readOnly) {
-                    return { modal, textarea: replyBox, doc };
+                    return { modal, reviewNumbers: tas[0], textarea: replyBox, doc };
                 }
             }
         }
         return null;
-    }
-
-    function getVisibleReplyNotices(docs) {
-        const notices = new Map();
-        for (const doc of new Set(docs)) {
-            const elements = doc.querySelectorAll("[role='alert'], [role='status'], [role='alertdialog'], [role='dialog'], .modal-content, .n-layer-popup");
-            for (const element of Array.from(elements).reverse()) {
-                if (element.closest("#bebesup-helper-panel") || !isVisible(element)) continue;
-                if (Array.from(notices.keys()).some(child => element.contains(child))) continue;
-                const text = (element.innerText || "").replace(/\s+/g, "");
-                if (text) notices.set(element, text);
-            }
-        }
-        return notices;
-    }
-
-    function getReplyNoticeStatus(text, expectedCount) {
-        if (/(?:실패|오류|미등록|일부|제외|등록할수없|처리할수없)/u.test(text)) return "REGISTRATION_FAILED";
-        const success = text.match(/^(?:알림|안내|등록결과)?(?:(?:총)?(\d+)건(?:의)?)?(?:판매자)?(?:일괄)?답글(?:이|을)?(?:정상적으로|성공적으로)?등록(?:되었습니다|했습니다|이완료되었습니다|완료)(?:[.!]|확인|닫기)*$/u);
-        if (success) {
-            return success[1] === undefined || Number(success[1]) === expectedCount ?
-                "REGISTERED" : "REGISTRATION_UNVERIFIED";
-        }
-        if (/답글.{0,20}등록.{0,10}(?:하시겠습니까|할까요)/u.test(text)) return "CONFIRM";
-        return null;
-    }
-
-    async function waitForReplyRegistration(docs, previousNotices, expectedCount) {
-        let confirmed = false;
-        for (let attempt = 0; attempt < 30; attempt++) {
-            const notices = getVisibleReplyNotices(docs);
-            for (const [notice, text] of notices) {
-                if (previousNotices.get(notice) === text || notice.querySelector("textarea")) continue;
-                const status = getReplyNoticeStatus(text, expectedCount);
-                if (status === "CONFIRM" && !confirmed) {
-                    const button = Array.from(notice.querySelectorAll("button, input[type='button'], [role='button']"))
-                        .find(btn => isVisible(btn) && !btn.disabled && /^(?:확인|예|네)$/.test((btn.innerText || btn.value || "").trim()));
-                    if (button) {
-                        confirmed = true;
-                        button.click();
-                    }
-                } else if (status && status !== "CONFIRM") {
-                    return { status, notice };
-                }
-            }
-            await sleep(300);
-        }
-        return { status: "REGISTRATION_UNVERIFIED" };
     }
 
     function analyzeReviewData(rawReviews) {
@@ -1010,12 +891,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         // 2. 데이터 소스 전방위 탐색 (네트워크 스니퍼, React Fiber, AngularJS, 전역 목록)
         let rawItem = null;
 
-        // 2-A. 네트워크 API 인터셉터 맵 조회 (가장 정확한 서버 원본 데이터)
-        if (reviewNo && window.__BEBESUP_API_REVIEWS_MAP__?.has(String(reviewNo))) {
-            rawItem = window.__BEBESUP_API_REVIEWS_MAP__.get(String(reviewNo));
-        }
-
-        // 2-B. React Fiber 탐색 (스마트스토어가 React 기반일 경우 memoizedProps에서 추출)
+        // React Fiber 탐색 (스마트스토어가 React 기반일 경우 memoizedProps에서 추출)
         if (!rawItem) {
             rawItem = findReviewFromReactFiber(tr);
             const rawReviewNo = rawItem?.reviewNo || rawItem?.reviewId || rawItem?.productOrderReviewNo;
@@ -1101,7 +977,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         return !stars[3] || Number(stars[3]) === stars[1].length ? stars[1].length : null;
     }
 
-    function extractReviewScore(d, rowElOrTr, scoreColId, scoreColIdx, api, node) {
+    function extractReviewScore(d, rowElOrTr, scoreColId, scoreColIdx, api, node, renderedCell) {
         const scores = [];
         if (api && node && scoreColId) {
             try { scores.push(parseReviewScore(api.getValue(scoreColId, node))); } catch(e) {}
@@ -1116,17 +992,18 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             for (const field of fields) scores.push(parseReviewScore(source[field]));
         }
 
-        let cell;
-        if (scoreColIdx >= 0) {
+        let cell = renderedCell;
+        if (!cell && scoreColIdx >= 0) {
             cell = rowElOrTr?.querySelectorAll("td, .ag-cell")[scoreColIdx];
-        } else if (scoreColId) {
+        } else if (!cell && scoreColId) {
             cell = rowElOrTr?.querySelector('[col-id="' + scoreColId + '"]');
         }
         if (cell) {
             scores.push(parseReviewScore(cell.innerText || cell.textContent));
-            for (const label of cell.querySelectorAll(".score, .point, .rating, .blind, [class*='star']")) {
+            for (const label of cell.querySelectorAll(".score, .point, .rating, .blind, [class*='star'], span, strong")) {
                 scores.push(parseReviewScore(label.innerText || label.textContent));
             }
+            scores.push(parseReviewScore(cell.querySelector("input[type='radio']:checked")?.value));
         }
 
         const knownScores = new Set(scores.filter(score => score !== null));
@@ -1144,14 +1021,6 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                     if (p && typeof p === 'string' && p.trim()) return p.trim();
                 }
             } catch(e) {}
-        }
-
-        // 네트워크 인터셉터 데이터 조회
-        const reviewNo = d?.reviewNo || d?.reviewId || d?.id || d?.productOrderReviewNo;
-        if (reviewNo && window.__BEBESUP_API_REVIEWS_MAP__?.has(String(reviewNo))) {
-            const apiItem = window.__BEBESUP_API_REVIEWS_MAP__.get(String(reviewNo));
-            const p = apiItem.productName || apiItem.channelProductName || apiItem.originProduct?.productName || apiItem.itemTitle || apiItem.productTitle;
-            if (p && typeof p === 'string' && p.trim()) return p.trim();
         }
 
         if (d && typeof d === 'object') {
@@ -1418,7 +1287,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         if (score === 3 && (Array.from(text.replace(/\s/g, "")).length < 5 ||
             /보통|무난|그럭저럭|나쁘지|긴\s*(하지만|한데)|지만|다만/u.test(text))) return false;
 
-        const positive = /좋아요|좋네요|좋습니다|좋았|만족|추천해|추천합니다|잘\s*(?:쓰|쓸|사용|닦)|(?:마음|맘)에\s*들|배송(?:이|도)?\s*빠르|부드러워|촉촉해|최고|훌륭|정착/u;
+        const positive = /좋아요|좋네요|좋습니다|좋았|좋고|좋은\s*거\s*같|만족|추천해|추천합니다|잘\s*(?:쓰|쓸|사용|닦)|(?:마음|맘)에\s*들|배송(?:이|도)?\s*빠르|부드러워|촉촉해|최고|훌륭|정착/u;
         if (positive.test(text)) return true;
         return score >= 4 && /굿|재구매|늘\s*쓰|항상\s*(?:쓰|사|구매)|꾸준히\s*(?:쓰|사용|구매)|믿고\s*(?:쓰|사|구매)|또\s*(?:살|시킬|구매)/u.test(text);
     }
@@ -1458,7 +1327,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             const globalReviewList = getGlobalReviewList(reviewInfo.doc);
             const { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx } = reviewInfo.table ? resolveTableColIndexes(reviewInfo.table) : {};
             reviewInfo.rows.forEach((tr, idx) => {
-                const rowData = extractSmartStoreRowData(tr, { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx }, globalReviewList);
+                const rowData = reviewInfo.type === "AG_GRID" ? extractRenderedGridReview(reviewInfo, tr) :
+                    extractSmartStoreRowData(tr, { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx }, globalReviewList);
                 const score = rowData.score;
                 const prodName = rowData.prodName || "베베숲 제품";
                 const text = rowData.reviewText;
@@ -1492,7 +1362,6 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     // ========================================================
     const runBtn = panel.querySelector("#bebesup-run-btn");
     const catSelect = panel.querySelector("#bebesup-target-cat");
-    const modeSelect = panel.querySelector("#bebesup-run-mode");
 
     // 모든 프레임 및 상위 도큐먼트 통합 수집
     function getAllDocs() {
@@ -1529,37 +1398,6 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         return null;
     }
 
-    // 이번 세션에서 이미 답글을 등록한 리뷰 서명(ID/지문) 메모리
-    const processedSignatures = new Set();
-
-    function getRowSignature(trOrData) {
-        if (!trOrData) return "";
-        if (typeof trOrData === "object" && !trOrData.tagName) {
-            const id = trOrData.reviewNo || trOrData.reviewId || trOrData.id || trOrData.productOrderId || trOrData.orderNo;
-            if (id) return String(id);
-            return (String(trOrData.reviewContent || trOrData.content || "").slice(0, 30) + "_" + String(trOrData.writerMemberId || trOrData.writerId || ""));
-        }
-        const tr = trOrData;
-        const rowId = tr.getAttribute("data-id") || tr.getAttribute("row-id") || tr.getAttribute("id") || "";
-        if (rowId) return rowId;
-        const txt = (tr.innerText || "").replace(/\s+/g, " ");
-        const idMatch = txt.match(/\b\d{9,11}\b/);
-        if (idMatch) return idMatch[0];
-        return txt.slice(0, 60);
-    }
-
-    // 스마트스토어 화면 목록 새로고침 (in-page AJAX [검색] 클릭)
-    async function refreshReviewList(targetDoc = document) {
-        const sBtn = findSearchButton(targetDoc);
-        if (sBtn) {
-            sBtn.focus();
-            sBtn.click();
-            await sleep(2200);
-            return true;
-        }
-        return false;
-    }
-
     // 카테고리 표시명 변환 헬퍼 함수
     function getCategoryLabel(cat) {
         if (cat === "SKINCARE") return "스킨케어";
@@ -1568,8 +1406,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     }
 
     // 단일 배치(50개) 처리 함수
-    async function executeSingleBatch(category, mode) {
-        const isTestMode = (mode === "TEST");
+    async function prepareReplyBatch(category) {
         const catLabel = getCategoryLabel(category);
         // 🌿 물티슈/전라인 전용 정성 공식 답글
         let replyMsg = "안녕하세요. 베베숲입니다. 소중한 리뷰 감사드립니다.\n언제나 아기 피부에 닿는 만큼 더욱 순하고 도톰하게 정성을 담겠습니다.\n궁금한 점이 생기시면 언제든 편하게 말씀해 주세요😊\n앞으로도 만족스러운 경험을 드릴 수 있도록 노력하겠습니다💚";
@@ -1582,192 +1419,80 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             replyMsg = "안녕하세요. 베베숲입니다. 소중한 리뷰 감사드립니다.\n온 가족 안심 세탁을 위해 깨끗한 세정력과 순한 안심 성분으로 보답하겠습니다.\n궁금한 점이 생기시면 언제든 편하게 말씀해 주세요😊\n앞으로도 만족스러운 경험을 드릴 수 있도록 노력하겠습니다💚";
         }
 
-        if (isTestMode) {
-            console.group(`🌿 [베베숲 AI] 눈으로 확인 모드 (안전 시뮬레이션 동작 중) - [${catLabel}]`);
-            console.log("%c• 안내: 실제 [등록] 버튼은 절대 누르지 않으며, 체크박스 선택 -> [답글작성] 클릭 -> 공식 문구 주입까지만 안전하게 시뮬레이션합니다.", "color: #0288d1; font-weight: bold; font-size: 12px;");
-            console.log("%c• F12 콘솔에서 각 리뷰별 평점/불만어/카테고리 선별 결과를 1건씩 확인하실 수 있습니다.", "color: #555;");
-        }
-
-        const api = getGridApi();
         const reviewInfo = findReviewTableInfo();
+        if (reviewInfo.rows.length === 0) return { status: "WAIT" };
 
-        if (!api && reviewInfo.rows.length === 0) {
-            if (isTestMode) console.groupEnd();
-            return { status: "WAIT" };
-        }
-
-        // ag-Grid 컬럼 및 HTML Table 인덱스 동적 해석
-        const { scoreColId, prodColId, optionColId, contentColId, replyColId } = api ? resolveAgGridCols(api) : {};
-        // 기존 선택 초기화 (오직 그리드/테이블 행 내부만 초기화하여 상단 검색조건 100% 보호)
-        if (api && typeof api.deselectAll === "function") {
-            try { api.deselectAll(); } catch(e) {}
-        }
-        if (reviewInfo.rows && reviewInfo.rows.length > 0) {
-            for (const tr of reviewInfo.rows) {
-                const c = tr.querySelector("input[type='checkbox']");
-                if (c && c.checked) {
-                    c.click();
-                    if (c.checked) {
-                        c.checked = false;
-                        c.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                }
-            }
+        for (const row of reviewInfo.rows) {
+            const checkbox = row.querySelector("input[type='checkbox']");
+            if (checkbox?.checked && !checkbox.disabled) checkbox.click();
         }
 
         let selectedCount = 0;
         let skippedBad = 0;
+        let skippedUnreadable = 0;
         let skippedAnswered = 0;
         let skippedCategory = 0;
-        const currentBatchSigs = [];
+        const selectedReviewNumbers = new Set();
 
-        // 전자동 연속 실행 모드는 50개(최대 개수), 테스트용(1회등록/눈으로확인)은 5개로 제한!
-        const BATCH_TARGET_LIMIT = (mode === "ONCE_REAL" || mode === "TEST") ? 5 : 50;
+        const BATCH_TARGET_LIMIT = 50;
 
-        if (api && typeof api.forEachNode === "function") {
-            api.forEachNode(node => {
-                if (selectedCount >= BATCH_TARGET_LIMIT) return;
-                const d = node.data || {};
-                const targetDoc = reviewInfo.doc || document;
-                const rowEl = targetDoc.querySelector(`.ag-row[row-id="${node.id}"], .ag-row[row-index="${node.rowIndex}"]`);
-                const rowText = (rowEl?.innerText || "").replace(/\s+/g, " ");
+        const isGrid = reviewInfo.type === "AG_GRID";
+        const globalReviewList = isGrid ? [] : getGlobalReviewList(reviewInfo.doc);
+        const tableColumns = isGrid ? null : resolveTableColIndexes(reviewInfo.table);
 
-                // 1. 이번 세션에서 이미 처리된 서명이면 무조건 제외
-                const sig = getRowSignature(d) || (rowEl ? getRowSignature(rowEl) : "");
-                if (sig && processedSignatures.has(sig)) {
-                    skippedAnswered++;
-                    return;
-                }
+        for (let rowIndex = 0; rowIndex < reviewInfo.rows.length; rowIndex++) {
+            if (selectedCount >= BATCH_TARGET_LIMIT) break;
+            const tr = reviewInfo.rows[rowIndex];
 
-                // 2. 답글여부 사전 검증 (이미 작성된 리뷰 제외)
-                if (replyColId) {
-                    const colVal = String(d[replyColId] || "").trim();
-                    if (/^(?:Y|답글?완료|답변완료|등록완료|등록)$/i.test(colVal.replace(/\s+/g, ""))) {
-                        skippedAnswered++;
-                        return;
-                    }
-                }
+            // 행별 원본 데이터(상품명, 옵션명, 본문원문, 평점, 답글여부) 전방위 정밀 추출
+            const rowData = isGrid ? extractRenderedGridReview(reviewInfo, tr) :
+                extractSmartStoreRowData(tr, tableColumns, globalReviewList);
+            const { reviewNo, prodName, optionInfo, reviewText, score, isAnswered } = rowData;
 
-                if (d.replyStatus === 'Y' || d.replyYn === 'Y' || d.sellerAnswerYn === 'Y' || d.answered === true || d.hasReply === true || Number(d.commentCount) > 0 || d.replyContent) {
-                    skippedAnswered++;
-                    return;
-                }
-
-                if (rowText.includes("답글보기") || rowText.includes("답글완료") || rowText.includes("답글수정") || rowText.includes("등록완료") || rowText.includes("답변완료")) {
-                    skippedAnswered++;
-                    return;
-                }
-
-                const score = extractReviewScore(d, rowEl, scoreColId, -1, api, node);
-                const reviewText = extractReviewContent(d, rowEl, contentColId, -1, api, node);
-                if (!isEligibleReview(score, reviewText)) {
-                    skippedBad++;
-                    return;
-                }
-
-                const prodName = extractProductName(d, rowEl, prodColId, -1, api, node);
-                const optionInfo = extractOptionInfo(d, rowEl, optionColId, -1, api, node);
-                if (classifyProductCategory(prodName, optionInfo) !== category) {
-                    skippedCategory++;
-                    return;
-                }
-
-                // 선별 통과! ag-Grid 네이티브 선택
-                node.setSelected(true, false);
-                if (rowEl) {
-                    const chk = rowEl.querySelector("input[type='checkbox']");
-                    if (chk && !chk.checked) {
-                        chk.click();
-                    }
-                }
-                if (sig) currentBatchSigs.push(sig);
-                selectedCount++;
-            });
-        } else if (reviewInfo.rows.length > 0) {
-            // [엔진 2] 스마트스토어 리뷰 HTML Table 직접 선택
-            const globalReviewList = getGlobalReviewList(reviewInfo.doc);
-            const { scoreColIdx, prodColIdx, optionColIdx, contentColIdx, replyColIdx, reviewNoColIdx } = reviewInfo.table ? resolveTableColIndexes(reviewInfo.table) : {};
-
-            if (isTestMode && globalReviewList.length > 0) {
-                console.log(`%c[AngularJS 모델 연동 성공] 스마트스토어 내부 리뷰 원본 데이터 ${globalReviewList.length}건 동기화 완료`, "color: #0288d1; font-weight: bold;");
+            // 1. 이미 답글완료 건 제외
+            if (isAnswered) {
+                skippedAnswered++;
+                continue;
             }
 
-            for (let rowIndex = 0; rowIndex < reviewInfo.rows.length; rowIndex++) {
-                if (selectedCount >= BATCH_TARGET_LIMIT) break;
-                const tr = reviewInfo.rows[rowIndex];
+            if (score === null || !reviewText || /(?:\.{3}|…)$/u.test(reviewText) ||
+                !/^\d+$/.test(reviewNo) || (isGrid && !rowData.replyStatusKnown)) {
+                skippedUnreadable++;
+                continue;
+            }
+            if (!isEligibleReview(score, reviewText)) {
+                skippedBad++;
+                continue;
+            }
 
-                // 행별 원본 데이터(상품명, 옵션명, 본문원문, 평점, 답글여부) 전방위 정밀 추출
-                const rowData = extractSmartStoreRowData(tr, { scoreColIdx, prodColIdx, optionColIdx, contentColIdx, replyColIdx, reviewNoColIdx }, globalReviewList);
-                const { reviewNo, prodName, optionInfo, reviewText, score, isAnswered } = rowData;
+            if (classifyProductCategory(prodName, optionInfo) !== category) {
+                skippedCategory++;
+                continue;
+            }
 
-                const sig = reviewNo || getRowSignature(tr);
-                if (sig && processedSignatures.has(sig)) {
-                    skippedAnswered++;
-                    continue;
+            const chk = tr.querySelector("input[type='checkbox']");
+            if (chk && !chk.disabled) {
+                if (!chk.checked) {
+                    chk.click();
                 }
-
-                // 1. 이미 답글완료 건 제외
-                if (isAnswered) {
-                    if (isTestMode) console.log(`%c[스킵 - 이미답변] ${reviewText.slice(0, 30)}...`, "color: #888;");
-                    skippedAnswered++;
-                    continue;
-                }
-
-                if (!isEligibleReview(score, reviewText)) {
-                    if (isTestMode) console.log("[제외] 평점 또는 리뷰 본문 기준 미충족", { reviewNo, score });
-                    skippedBad++;
-                    continue;
-                }
-
-                if (classifyProductCategory(prodName, optionInfo) !== category) {
-                    if (isTestMode) console.log("[제외] 선택한 상품군과 불일치", { reviewNo, prodName });
-                    skippedCategory++;
-                    continue;
-                }
-
-                // 6. 체크박스 체크 (실제 사용자 클릭 시뮬레이션으로 스마트스토어 모델 연동)
-                const chk = tr.querySelector("input[type='checkbox']");
-                if (chk) {
-                    if (!chk.checked) {
-                        chk.click();
-                    }
-                    if (!chk.checked) {
-                        chk.checked = true;
-                        chk.dispatchEvent(new Event('input', { bubbles: true }));
-                        chk.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                    if (sig) currentBatchSigs.push(sig);
-                    selectedCount++;
-                    if (isTestMode) {
-                        const displayProd = prodName ? prodName.slice(0, 25) : "물티슈(기본)";
-                        console.log(`%c✅ [통과 #${selectedCount}] 체크박스 선택됨 | ★${score} | 상품: ${displayProd} | 내용: "${reviewText.slice(0, 30)}..."`, "color: #2e7d32; font-weight: bold; background: #e8f5e9; padding: 2px 6px; border-radius: 4px;");
-                    }
-                }
+                if (!chk.checked) continue;
+                selectedReviewNumbers.add(reviewNo);
+                selectedCount++;
             }
         }
 
         if (selectedCount === 0) {
-            if (isTestMode) {
-                console.warn(`[선별 결과 0건] 불만/저평점 제외: ${skippedBad}건 | 기답변 제외: ${skippedAnswered}건 | 타카테고리 제외: ${skippedCategory}건`);
-                console.groupEnd();
-            }
             if (skippedCategory > 0) {
-                return { status: "EMPTY_CATEGORY", skippedAnswered, skippedBad, skippedCategory, category, catLabel };
+                return { status: "EMPTY_CATEGORY", skippedAnswered, skippedBad, skippedUnreadable, skippedCategory, category, catLabel };
             }
-            return { status: "EMPTY", skippedAnswered, skippedBad, skippedCategory, category, catLabel };
-        }
-
-        if (isTestMode) {
-            console.log(`%c📊 [선별 집계 완료] 선택 통과: ${selectedCount}건 | 불만/저평점 제외: ${skippedBad}건 | 기답변 제외: ${skippedAnswered}건 | 타카테고리 제외: ${skippedCategory}건`, "background: #e8f5e9; color: #1b5e20; font-weight: bold; padding: 4px; font-size: 12px;");
-            console.log(`%c🔘 [1단계 성공] 테이블 체크박스 ${selectedCount}개 선택 완료! -> [답글작성] 버튼 클릭 중...`, "color: #0288d1; font-weight: bold;");
+            return { status: "EMPTY", skippedAnswered, skippedBad, skippedUnreadable, skippedCategory, category, catLabel };
         }
 
         runBtn.innerText = `⏳ [${catLabel}] ${selectedCount}개 작성 중...`;
 
         // 1. 답글작성 버튼 탐색 (테이블 인근 툴바 및 전역/iframe)
-        const replyBtn = findBatchReplyButton(reviewInfo.doc, reviewInfo.table);
+        const replyBtn = findBatchReplyButton(reviewInfo.doc);
         if (!replyBtn) {
-            if (isTestMode) console.groupEnd();
             return { status: "NO_BUTTON" };
         }
 
@@ -1782,328 +1507,64 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             await sleep(200);
         }
         if (!modalInfo) {
-            if (isTestMode) console.groupEnd();
             return { status: "NO_REPLY_FIELD" };
         }
 
-        const { modal, textarea: replyBox, doc } = modalInfo;
+        const { reviewNumbers, textarea: replyBox, doc } = modalInfo;
+        if (selectedReviewNumbers.size > 0) {
+            const modalNumbers = new Set(reviewNumbers.value.match(/\d+/g) || []);
+            if (modalNumbers.size !== selectedCount || [...modalNumbers].some(number => !selectedReviewNumbers.has(number))) {
+                return { status: "REVIEW_NUMBER_MISMATCH" };
+            }
+        }
         const nativeSetter = Object.getOwnPropertyDescriptor(doc.defaultView.HTMLTextAreaElement.prototype, "value")?.set;
         if (!nativeSetter) {
-            if (isTestMode) console.groupEnd();
             return { status: "NO_REPLY_FIELD" };
         }
         nativeSetter.call(replyBox, replyMsg);
         replyBox.dispatchEvent(new Event("input", { bubbles: true }));
         replyBox.dispatchEvent(new Event("change", { bubbles: true }));
-        if (isTestMode) {
-            console.groupEnd();
-            return { status: "TEST_DONE", count: selectedCount };
-        }
-
-        await sleep(800);
-        if (mode === "AUTO_ALL" && sessionStorage.getItem("bebesup_auto_loop") !== "true") {
-            return { status: "STOPPED" };
-        }
-
-        const currentModalInfo = findReplyModalInfo(doc);
-        if (currentModalInfo?.textarea !== replyBox || replyBox.value !== replyMsg) {
-            return { status: "NO_REPLY_FIELD" };
-        }
-
-        const submitBtn = Array.from(modal.querySelectorAll("button, input[type='button'], input[type='submit'], [role='button']"))
-            .find(btn => isVisible(btn) && !btn.disabled && btn.getAttribute("aria-disabled") !== "true" &&
-                /^(?:등록|저장|답글등록)$/.test((btn.innerText || btn.value || "").replace(/\s+/g, "")));
-        if (!submitBtn) return { status: "NO_SUBMIT_BUTTON" };
-
-        const docs = [doc, document];
-        const previousNotices = getVisibleReplyNotices(docs);
-        submitBtn.click();
-        const { status, notice } = await waitForReplyRegistration(docs, previousNotices, selectedCount);
-        if (status !== "REGISTERED") return { status };
-
-        const closeBtn = Array.from(notice.querySelectorAll("button, input[type='button'], [role='button']"))
-            .find(btn => isVisible(btn) && !btn.disabled && /^(?:확인|닫기)$/.test((btn.innerText || btn.value || "").trim()));
-        if (closeBtn) closeBtn.click();
-        for (const signature of currentBatchSigs) processedSignatures.add(signature);
-        return { status, count: selectedCount };
+        return { status: "READY", count: selectedCount };
     }
 
-    const batchErrorMessages = {
-        NO_REPLY_FIELD: "일괄 답글 창의 두 번째 입력칸을 확인하지 못했습니다.",
-        NO_SUBMIT_BUTTON: "일괄 답글 창에서 사용할 수 있는 등록 버튼을 찾지 못했습니다.",
-        REGISTRATION_FAILED: "스마트스토어에서 등록 실패 또는 일부 처리 메시지를 표시했습니다. 리뷰 목록에서 실제 등록 결과를 확인해 주세요.",
-        REGISTRATION_UNVERIFIED: "스마트스토어의 등록 완료를 확인하지 못했습니다. 리뷰 목록에서 실제 등록 결과를 확인한 뒤 다시 실행해 주세요."
-    };
-
-    // 전자동 연속 실행 루프 (페이지 전체 새로고침 없이 in-page [검색]을 통해 50개씩 논스톱 연속 처리)
-    async function runAutoLoop(category) {
-        const catLabel = getCategoryLabel(category);
-        sessionStorage.setItem("bebesup_auto_loop", "true");
-        sessionStorage.setItem("bebesup_target_cat", category);
-
-        while (sessionStorage.getItem("bebesup_auto_loop") === "true") {
-            panel.style.border = "2px solid #d32f2f";
-            runBtn.style.background = "#d32f2f";
-            runBtn.innerText = `⏹ 자동실행 중지 (누적 ${totalSuccess}건)`;
-
-            let api = getGridApi();
-            let reviewInfo = findReviewTableInfo();
-            if (!api && reviewInfo.rows.length === 0) {
-                runBtn.innerText = "⏳ 목록 검색 중...";
-                await refreshReviewList();
-                await sleep(1000);
-                api = getGridApi();
-                reviewInfo = findReviewTableInfo();
-            }
-
-            if (!api && reviewInfo.rows.length === 0) {
-                sessionStorage.removeItem("bebesup_auto_loop");
-                panel.style.border = "2px solid #00b050";
-                runBtn.style.background = "#00b050";
-                runBtn.innerText = "▶ 자동 실행 시작";
-                alert("⚠️ 스마트스토어 리뷰 목록 테이블을 찾지 못했습니다.\n먼저 상단에서 기간 선택 후 [검색] 버튼을 눌러 목록을 띄워주세요!");
-                return;
-            }
-
-            const result = await executeSingleBatch(category, "AUTO_ALL");
-
-            if (result.status === "REGISTERED") {
-                totalSuccess += result.count;
-                sessionStorage.setItem("bebesup_total_success", String(totalSuccess));
-                runBtn.innerText = `⏳ ${result.count}건 등록 완료! (총 ${totalSuccess}건) 다음 50개 조회 중...`;
-                await sleep(1200);
-
-                // 전체 새로고침 없이 상단 [검색] 버튼을 눌러 다음 미답변 리뷰들을 즉시 갱신
-                const refreshed = await refreshReviewList(reviewInfo.doc);
-                if (!refreshed) {
-                    location.reload();
-                    return;
-                }
-                await sleep(1800);
-            } else if (result.status === "ALREADY_ANSWERED_WARN") {
-                runBtn.innerText = "⏳ 이미 작성된 건 감지, [미등록] 목록 갱신 중...";
-                dismissAlreadyAnsweredPopup();
-                clearAllSelections(api, reviewInfo);
-                ensureUnansweredFilterSelected();
-                await sleep(800);
-                await refreshReviewList(reviewInfo.doc);
-                await sleep(2200);
-            } else if (result.status === "EMPTY" || result.status === "EMPTY_CATEGORY") {
-                if (result.status === "EMPTY_CATEGORY" && totalSuccess === 0) {
-                    sessionStorage.removeItem("bebesup_auto_loop");
-                    panel.style.border = "2px solid #00b050";
-                    runBtn.style.background = "#00b050";
-                    runBtn.innerText = "▶ 자동 실행 시작";
-                    alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않아 0건 처리되었습니다.\n(총 ${result.skippedCategory}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 실행해 주세요!\n2. [전라인 공통(물티슈)]은 물티슈 상품에만 적용됩니다.`);
-                    return;
-                }
-
-                // 막 등록된 직후 DOM/그리드 갱신 딜레이 고려 -> 1회 더 검색 후 재확인
-                runBtn.innerText = "⏳ 남은 리뷰 최종 확인 중...";
-                await refreshReviewList(reviewInfo.doc);
-                await sleep(1500);
-
-                const checkResult = await executeSingleBatch(category, "AUTO_ALL");
-                if (checkResult.status === "REGISTERED") {
-                    totalSuccess += checkResult.count;
-                    sessionStorage.setItem("bebesup_total_success", String(totalSuccess));
-                    runBtn.innerText = `⏳ ${checkResult.count}건 등록 완료! (총 ${totalSuccess}건) 다음 50개 조회 중...`;
-                    await sleep(1200);
-                    await refreshReviewList(reviewInfo.doc);
-                    await sleep(1800);
-                    continue;
-                }
-
-                sessionStorage.removeItem("bebesup_auto_loop");
-                panel.style.border = "2px solid #00b050";
-                runBtn.style.background = "#00b050";
-                runBtn.innerText = "▶ 자동 실행 시작";
-
-                if (checkResult.status !== "EMPTY" && checkResult.status !== "EMPTY_CATEGORY") {
-                    if (checkResult.status !== "STOPPED") alert(batchErrorMessages[checkResult.status] || `⚠️ 처리 상태: ${checkResult.status}`);
-                    return;
-                }
-
-                const finalSkippedCat = checkResult.skippedCategory || result.skippedCategory || 0;
-                if (totalSuccess === 0 && finalSkippedCat > 0) {
-                    alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않아 0건 처리되었습니다.\n(총 ${finalSkippedCat}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 실행해 주세요!\n2. [전라인 공통(물티슈)]은 물티슈 상품에만 적용됩니다.`);
-                } else {
-                    alert(`🎉 [베베숲 AI] 모든 미답변 칭찬 리뷰 답글 등록 완료!\n\n총 ${totalSuccess}건의 리뷰에 답글이 성공적으로 등록되었습니다.\n(남은 불만/하자/먼지/아토피 리뷰는 수동 확인을 위해 안전하게 보존되었습니다.)`);
-                }
-                return;
-            } else if (result.status === "NO_BUTTON") {
-                sessionStorage.removeItem("bebesup_auto_loop");
-                panel.style.border = "2px solid #00b050";
-                runBtn.style.background = "#00b050";
-                runBtn.innerText = "▶ 자동 실행 시작";
-                alert("⚠️ 화면에서 [답글작성] 버튼을 찾지 못했습니다.\n리뷰 관리 화면인지 확인해 주세요.");
-                return;
-            } else if (result.status === "NO_SELECTION_ALERT") {
-                runBtn.innerText = "⚠️ 선택 동기화 대기 중...";
-                clearAllSelections(api, reviewInfo);
-                await sleep(1000);
-                await refreshReviewList(reviewInfo.doc);
-                await sleep(1500);
-            } else if (result.status === "TIMEOUT") {
-                runBtn.innerText = "⚠️ 창 지연 감지, 재시도 중...";
-                await sleep(1500);
-                await refreshReviewList(reviewInfo.doc);
-                await sleep(1500);
-            } else {
-                sessionStorage.removeItem("bebesup_auto_loop");
-                panel.style.border = "2px solid #00b050";
-                runBtn.style.background = "#00b050";
-                runBtn.innerText = "▶ 자동 실행 시작";
-                if (result.status !== "STOPPED") alert(batchErrorMessages[result.status] || `⚠️ 처리 상태: ${result.status}`);
-                return;
-            }
-        }
-    }
-
-    // 실행 버튼 클릭
-    let runInProgress = false;
+    let preparingReply = false;
     runBtn.onclick = async () => {
-        if (sessionStorage.getItem("bebesup_auto_loop") === "true") {
-            sessionStorage.removeItem("bebesup_auto_loop");
-            panel.style.border = "2px solid #00b050";
-            runBtn.style.background = "#00b050";
-            runBtn.innerText = "▶ 자동 실행 시작";
-            alert(`⏹ 자동 작업이 중지되었습니다.\n(현재까지 총 ${totalSuccess}건 완료됨)`);
-            return;
-        }
-        if (runInProgress) return;
-        runInProgress = true;
+        if (preparingReply || findReplyModalInfo(document)) return;
+        preparingReply = true;
+        runBtn.disabled = true;
+        runBtn.innerText = "⏳ 리뷰 선별 중...";
         try {
             const category = catSelect.value;
-            const mode = modeSelect.value;
-            const catLabel = getCategoryLabel(category);
-
-            // 시각적 피드백 즉시 제공!
-            const originalBtnText = runBtn.innerText;
-            runBtn.innerText = "⏳ 상태 확인 중...";
-
-            let api = getGridApi();
-            let reviewInfo = findReviewTableInfo();
-
-            if (!api && reviewInfo.rows.length === 0) {
-                // 화면에 검색 버튼이 있다면 자동으로 [검색]을 클릭하여 목록 로딩 시도
-                const searchBtn = findSearchButton();
-                if (searchBtn) {
-                    runBtn.innerText = "⏳ 목록 검색 중...";
-                    searchBtn.click();
-                    await sleep(1500);
-                    api = getGridApi();
-                    reviewInfo = findReviewTableInfo();
-                }
-            }
-
-            if (!api && reviewInfo.rows.length === 0) {
-                runBtn.innerText = originalBtnText;
-                alert("⚠️ 스마트스토어 리뷰 목록 테이블을 찾지 못했습니다.\n\n먼저 상단에서 기간(1개월 등)을 선택하고 초록색 [검색] 버튼을 눌러 리뷰 목록을 화면에 띄워주신 후 다시 눌러주세요!");
+            const result = await prepareReplyBatch(category);
+            if (result.status === "READY") {
+                runBtn.innerText = `✅ 답글 ${result.count}건 입력 완료`;
                 return;
             }
 
-            if (mode === "AUTO_ALL") {
-                totalSuccess = 0;
-                sessionStorage.setItem("bebesup_total_success", "0");
-                await runAutoLoop(category);
-            } else if (mode === "ONCE_REAL") {
-                runBtn.innerText = "⏳ 5개 등록 중...";
-                const result = await executeSingleBatch(category, "ONCE_REAL");
-                runBtn.innerText = "▶ 자동 실행 시작";
-                if (result.status === "REGISTERED") {
-                    alert(`✅ [등록 완료] 총 ${result.count}건의 칭찬 리뷰에 답글이 성공적으로 등록되었습니다!\n\n화면 목록을 갱신합니다.`);
-                    await sleep(500);
-                    const ok = await refreshReviewList();
-                    if (!ok) location.reload();
-                } else if (result.status === "ALREADY_ANSWERED_WARN") {
-                    alert("ℹ️ 화면에 이미 답글이 작성된 건이 감지되어 새로고침합니다.");
-                    await sleep(500);
-                    const ok = await refreshReviewList();
-                    if (!ok) location.reload();
-                } else if (result.status === "NO_SELECTION_ALERT") {
-                    alert("⚠️ 스마트스토어에서 선택된 리뷰를 인식하지 못했습니다.\n체크박스를 수동으로 1개 선택해 보신 뒤 다시 시도해 주세요.");
-                } else if (result.status === "EMPTY" || result.status === "EMPTY_CATEGORY") {
-                    if (result.skippedCategory > 0) {
-                        alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않았습니다.\n(총 ${result.skippedCategory}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 다시 실행해 주세요!\n2. [전라인 공통(물티슈)]은 물티슈 상품에만 적용됩니다.`);
-                    } else {
-                        alert("ℹ️ 현재 화면에 답글 대상 칭찬 리뷰가 없습니다.\n상단에서 기간 선택 후 [검색]을 먼저 진행해 주세요!");
-                    }
-                } else if (result.status === "NO_BUTTON") {
-                    alert("⚠️ 화면에서 [답글작성] 버튼을 찾지 못했습니다.\n리뷰 관리 화면인지 확인해 주세요.");
-                } else if (result.status === "TIMEOUT") {
-                    alert("⚠️ 답글 작성 창을 여는 중 시간이 초과되었습니다.\n스마트스토어 화면을 새로고침(Ctrl+F5) 후 다시 시도해 주세요.");
-                } else {
-                    alert(batchErrorMessages[result.status] || `⚠️ 상태: ${result.status}`);
-                }
-            } else {
-                // TEST 모드 (눈으로 확인 모드)
-                runBtn.innerText = "👀 테스트 검토 중...";
-                const res = await executeSingleBatch(category, "TEST");
-                runBtn.innerText = "▶ 자동 실행 시작";
-                if (res.status === "TEST_DONE") {
-                    alert(`🛡️ [눈으로 확인 모드 - 시뮬레이션 완료]\n\n• 선별된 칭찬 리뷰: ${res.count}건\n• 화면의 테이블 체크박스가 실제로 선택되었고, [답글작성] 팝업창에 맞춤 답글이 입력되었습니다!\n• ❌ 실제 [등록] 버튼은 누르지 않고 팝업창을 띄워둔 채 안전하게 멈췄습니다.\n\n💡 F12 키를 눌러 [Console(콘솔)] 탭을 보시면, 어떤 리뷰가 왜 통과되었고 어떤 리뷰가 왜 제외되었는지 1건씩 컬러 로그로 확인하실 수 있습니다!`);
-                } else if (res.status === "NO_SELECTION_ALERT") {
-                    alert("⚠️ 스마트스토어에서 선택된 리뷰를 인식하지 못했습니다.\n체크박스를 수동으로 1개 선택해 보신 뒤 다시 시도해 주세요.");
-                } else if (res.status === "EMPTY" || res.status === "EMPTY_CATEGORY") {
-                    if (res.skippedCategory > 0 && res.skippedBad === 0) {
-                        alert(`⚠️ [카테고리 선별 안내]\n현재 화면에서 [${catLabel}] 관련 리뷰가 감지되지 않았습니다.\n(총 ${res.skippedCategory}건이 타 카테고리 상품으로 제외됨)\n\n💡 해결 방법:\n1. 스마트스토어 상단 검색창의 [상품명] 입력칸에 '${category === "DETERGENT" ? "세제" : (category === "SKINCARE" ? "로션" : "물티슈")}'를 입력 후 [검색]을 누른 뒤 다시 실행해 주세요!\n2. [전라인 공통(물티슈)]은 물티슈 상품에만 적용됩니다.`);
-                    } else if (res.skippedAnswered > 0) {
-                        alert(`ℹ️ 현재 화면의 리뷰(${res.skippedAnswered}건)는 모두 이미 답글이 작성된 건입니다.\n\n상단 검색 조건에서 [답글여부: 미등록]으로 변경 후 [검색]을 진행해 주세요.`);
-                    } else if (res.skippedBad > 0 || res.skippedCategory > 0) {
-                        alert(`🛡️ 안심 차단 및 카테고리 분리 완료:\n\n• 저평점(1~2점) 및 불만 제외: ${res.skippedBad || 0}건\n• 타 카테고리 상품 제외: ${res.skippedCategory || 0}건\n\n선택하신 카테고리의 긍정 칭찬 리뷰만 안전하게 선별됩니다.`);
-                    } else {
-                        alert("ℹ️ 현재 화면에 답글 대상 칭찬 리뷰가 없습니다.\n상단에서 [검색]을 먼저 진행해 주세요!");
-                    }
-                } else if (res.status === "NO_BUTTON") {
-                    alert("⚠️ 화면에서 [답글작성] 버튼을 찾지 못했습니다.\n리뷰 관리 화면인지 확인해 주세요.");
-                } else if (res.status === "TIMEOUT") {
-                    alert("⚠️ 답글 작성 창을 여는 중 시간이 초과되었습니다.\n스마트스토어 화면을 새로고침(Ctrl+F5) 후 다시 시도해 주세요.");
-                } else {
-                    alert(batchErrorMessages[res.status] || `⚠️ 처리 결과: ${res.status}`);
-                }
-            }
-        } catch(err) {
             runBtn.innerText = "▶ 자동 실행 시작";
-            alert(`⚠️ 실행 중 오류가 발생했습니다: ${err.message || err}`);
+            if (result.status === "EMPTY" || result.status === "EMPTY_CATEGORY") {
+                alert([
+                    `[${getCategoryLabel(category)}] 답글 대상 0건`,
+                    `저평점·불만 또는 칭찬 기준 미충족: ${result.skippedBad}건`,
+                    `리뷰 정보 미확인: ${result.skippedUnreadable}건`,
+                    `다른 상품군 또는 상품군 미확인: ${result.skippedCategory}건`,
+                    `이미 답글 등록: ${result.skippedAnswered}건`
+                ].join("\n"));
+                return;
+            }
+            const messages = {
+                WAIT: "리뷰 목록을 찾지 못했습니다. 스마트스토어에서 리뷰를 검색해 주세요.",
+                NO_BUTTON: "스마트스토어의 답글작성 버튼을 찾지 못했습니다.",
+                NO_REPLY_FIELD: "일괄 답글 창의 두 번째 입력칸을 확인하지 못했습니다.",
+                REVIEW_NUMBER_MISMATCH: "선택한 리뷰와 답글 창에 표시된 리뷰 글번호가 일치하지 않아 중단했습니다."
+            };
+            alert(messages[result.status] || "답글 작성창을 준비하지 못했습니다.");
+        } catch (error) {
+            runBtn.innerText = "▶ 자동 실행 시작";
+            alert(`답글 작성 준비 중 오류가 발생했습니다: ${error.message}`);
         } finally {
-            runInProgress = false;
+            preparingReply = false;
+            runBtn.disabled = false;
         }
     };
-
-    // 5. 페이지 새로고침 후 자동 가동 (수동 새로고침이나 재접속 시에도 끊김 없이 이어받아 가동)
-    if (isAutoLooping) {
-        panel.style.border = "2px solid #d32f2f";
-        runBtn.style.background = "#d32f2f";
-        runBtn.innerText = `⏹ 자동실행 중지 (누적 ${totalSuccess}건)`;
-
-        let waitCount = 0;
-        let searchTriggered = false;
-        const autoInterval = setInterval(async () => {
-            waitCount++;
-            const api = getGridApi();
-            const reviewInfo = findReviewTableInfo();
-            const isReady = (api && typeof api.forEachNode === "function") || (reviewInfo.rows && reviewInfo.rows.length > 0);
-
-            if (isReady) {
-                clearInterval(autoInterval);
-                await sleep(1500);
-                await runAutoLoop(savedCat);
-            } else if (!searchTriggered && waitCount >= 3) {
-                searchTriggered = true;
-                const sBtn = findSearchButton();
-                if (sBtn) {
-                    runBtn.innerText = "⏳ 페이지 재접속 감지, 목록 자동 검색 중...";
-                    sBtn.click();
-                }
-            } else if (waitCount > 40) {
-                clearInterval(autoInterval);
-                sessionStorage.removeItem("bebesup_auto_loop");
-                panel.style.border = "2px solid #00b050";
-                runBtn.style.background = "#00b050";
-                runBtn.innerText = "▶ 자동 실행 시작";
-                alert("⚠️ 페이지 새로고침 후 리뷰 목록을 불러오지 못해 자동 실행이 일시 중지되었습니다.\n상단 [검색] 버튼을 눌러 목록을 띄운 뒤 다시 시작해 주세요.");
-            }
-        }, 500);
-    }
 })();
