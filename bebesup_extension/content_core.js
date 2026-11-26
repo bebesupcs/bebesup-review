@@ -44,7 +44,7 @@
                 베베숲 AI
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.11 (스마트스토어 리뷰 목록 연동)
+                v2.8.12 (리뷰 선별 테스트)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -56,6 +56,9 @@
                 <option value="DETERGENT">🫧 세제</option>
             </select>
 
+            <button id="bebesup-test-btn" type="button" style="background:#fff8e1; color:#9a3700; border:1px solid #f0a447; padding:6px 12px; border-radius:20px; font-size:11px; font-weight:bold; cursor:pointer; white-space:nowrap;">
+                선별 테스트
+            </button>
             <button id="bebesup-run-btn" style="background:#00b050; color:white; border:none; padding:6px 14px; border-radius:20px; font-size:11px; font-weight:bold; cursor:pointer; transition:all 0.2s; white-space:nowrap;">
                 ▶ 자동 실행 시작
             </button>
@@ -1281,13 +1284,13 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
         const text = reviewText.replace(/\s+/g, " ");
         if (badWords.some(word => text.includes(word))) return false;
-        if (/만족스럽지|만족하지\s*않|불만족|좋지는?\s*않|좋지\s*못|추천하지\s*않|추천\s*안|(?:마음|맘)에\s*(?:안\s*들|들지\s*않)|기대\s*(?:이하|만큼은?\s*아니)/u.test(text)) {
+        if (/만족스럽지|만족하지\s*않|불만족|좋지는?\s*않|좋지\s*못|추천하지\s*않|추천\s*안|(?:마음|맘)에\s*(?:안\s*들|들지\s*않)|기대\s*(?:이하|만큼은?\s*아니)|(?:뽑기|꺼내기|쓰기|사용하기)(?:가|는)?\s*(?:힘들|어렵|불편)|(?:배송|택배|도착)[^.!?。]{0,35}(?:(?:며칠|몇\s*주|일주일|[3-9]\s*일)(?:이나|씩)?\s*기다|너무\s*오래\s*걸)/u.test(text)) {
             return false;
         }
         if (score === 3 && (Array.from(text.replace(/\s/g, "")).length < 5 ||
             /보통|무난|그럭저럭|나쁘지|긴\s*(하지만|한데)|지만|다만/u.test(text))) return false;
 
-        const positive = /좋아요|좋네요|좋습니다|좋았|좋고|좋은\s*거\s*같|만족|추천해|추천합니다|잘\s*(?:쓰|쓸|사용|닦)|(?:마음|맘)에\s*들|배송(?:이|도)?\s*빠르|부드러워|촉촉해|최고|훌륭|정착/u;
+        const positive = /좋아요|좋네요|좋습니다|좋았|좋고|좋은\s*거\s*같|만족|추천해|추천합니다|잘\s*(?:쓰|쓸|사용|닦)|(?:마음|맘)에\s*들|배송(?:이|도)?\s*빠르|부드러워|부드럽습니다|촉촉해|최고|훌륭|정착/u;
         if (positive.test(text)) return true;
         return score >= 4 && /굿|재구매|늘\s*쓰|항상\s*(?:쓰|사|구매)|꾸준히\s*(?:쓰|사용|구매)|믿고\s*(?:쓰|사|구매)|또\s*(?:살|시킬|구매)/u.test(text);
     }
@@ -1406,7 +1409,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     }
 
     // 단일 배치(50개) 처리 함수
-    async function prepareReplyBatch(category) {
+    async function prepareReplyBatch(category, testOnly = false) {
         const catLabel = getCategoryLabel(category);
         // 🌿 물티슈/전라인 전용 정성 공식 답글
         let replyMsg = "안녕하세요. 베베숲입니다. 소중한 리뷰 감사드립니다.\n언제나 아기 피부에 닿는 만큼 더욱 순하고 도톰하게 정성을 담겠습니다.\n궁금한 점이 생기시면 언제든 편하게 말씀해 주세요😊\n앞으로도 만족스러운 경험을 드릴 수 있도록 노력하겠습니다💚";
@@ -1422,17 +1425,12 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         const reviewInfo = findReviewTableInfo();
         if (reviewInfo.rows.length === 0) return { status: "WAIT" };
 
-        for (const row of reviewInfo.rows) {
-            const checkbox = row.querySelector("input[type='checkbox']");
-            if (checkbox?.checked && !checkbox.disabled) checkbox.click();
-        }
-
-        let selectedCount = 0;
         let skippedBad = 0;
         let skippedUnreadable = 0;
         let skippedAnswered = 0;
         let skippedCategory = 0;
         const selectedReviewNumbers = new Set();
+        const candidates = [];
 
         const BATCH_TARGET_LIMIT = 50;
 
@@ -1440,9 +1438,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         const globalReviewList = isGrid ? [] : getGlobalReviewList(reviewInfo.doc);
         const tableColumns = isGrid ? null : resolveTableColIndexes(reviewInfo.table);
 
-        for (let rowIndex = 0; rowIndex < reviewInfo.rows.length; rowIndex++) {
-            if (selectedCount >= BATCH_TARGET_LIMIT) break;
-            const tr = reviewInfo.rows[rowIndex];
+        for (const tr of reviewInfo.rows) {
 
             // 행별 원본 데이터(상품명, 옵션명, 본문원문, 평점, 답글여부) 전방위 정밀 추출
             const rowData = isGrid ? extractRenderedGridReview(reviewInfo, tr) :
@@ -1471,22 +1467,27 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             }
 
             const chk = tr.querySelector("input[type='checkbox']");
-            if (chk && !chk.disabled) {
-                if (!chk.checked) {
-                    chk.click();
-                }
-                if (!chk.checked) continue;
-                selectedReviewNumbers.add(reviewNo);
-                selectedCount++;
-            }
+            if (chk && !chk.disabled) candidates.push({ checkbox: chk, reviewNo });
         }
 
-        if (selectedCount === 0) {
-            if (skippedCategory > 0) {
-                return { status: "EMPTY_CATEGORY", skippedAnswered, skippedBad, skippedUnreadable, skippedCategory, category, catLabel };
-            }
-            return { status: "EMPTY", skippedAnswered, skippedBad, skippedUnreadable, skippedCategory, category, catLabel };
+        const batch = candidates.slice(0, BATCH_TARGET_LIMIT);
+        const summary = {
+            checked: reviewInfo.rows.length, eligible: candidates.length, batchSize: batch.length,
+            skippedAnswered, skippedBad, skippedUnreadable, skippedCategory
+        };
+        if (testOnly) return { status: "TESTED", ...summary };
+        if (batch.length === 0) return { status: "EMPTY", ...summary };
+
+        for (const row of reviewInfo.rows) {
+            const checkbox = row.querySelector("input[type='checkbox']");
+            if (checkbox?.checked && !checkbox.disabled) checkbox.click();
         }
+        for (const { checkbox, reviewNo } of batch) {
+            if (!checkbox.checked) checkbox.click();
+            if (checkbox.checked) selectedReviewNumbers.add(reviewNo);
+        }
+        const selectedCount = selectedReviewNumbers.size;
+        if (selectedCount !== batch.length) return { status: "SELECTION_FAILED" };
 
         runBtn.innerText = `⏳ [${catLabel}] ${selectedCount}개 작성 중...`;
 
@@ -1527,7 +1528,33 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         return { status: "READY", count: selectedCount };
     }
 
+    const testBtn = panel.querySelector("#bebesup-test-btn");
+    const noReviewsMessage = "리뷰 목록을 찾지 못했습니다. 스마트스토어에서 리뷰를 검색해 주세요.";
+    function showSelectionSummary(category, result, testOnly) {
+        alert([
+            `[${getCategoryLabel(category)}] ${testOnly ? "선별 테스트 결과" : "답글 대상 0건"}`,
+            `현재 화면에서 확인: ${result.checked}건`,
+            `답글 후보: ${result.eligible}건 (이번 배치 최대 ${result.batchSize}건)`,
+            `저평점·불만 또는 칭찬 기준 미충족: ${result.skippedBad}건`,
+            `리뷰 정보 미확인: ${result.skippedUnreadable}건`,
+            `다른 상품군 또는 상품군 미확인: ${result.skippedCategory}건`,
+            `이미 답글 등록: ${result.skippedAnswered}건`
+        ].join("\n"));
+    }
+
     let preparingReply = false;
+    testBtn.onclick = async () => {
+        if (preparingReply) return;
+        const category = catSelect.value;
+        try {
+            const result = await prepareReplyBatch(category, true);
+            if (result.status === "WAIT") alert(noReviewsMessage);
+            else showSelectionSummary(category, result, true);
+        } catch (error) {
+            alert(`선별 테스트 중 오류가 발생했습니다: ${error.message}`);
+        }
+    };
+
     runBtn.onclick = async () => {
         if (preparingReply || findReplyModalInfo(document)) return;
         preparingReply = true;
@@ -1542,18 +1569,13 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             }
 
             runBtn.innerText = "▶ 자동 실행 시작";
-            if (result.status === "EMPTY" || result.status === "EMPTY_CATEGORY") {
-                alert([
-                    `[${getCategoryLabel(category)}] 답글 대상 0건`,
-                    `저평점·불만 또는 칭찬 기준 미충족: ${result.skippedBad}건`,
-                    `리뷰 정보 미확인: ${result.skippedUnreadable}건`,
-                    `다른 상품군 또는 상품군 미확인: ${result.skippedCategory}건`,
-                    `이미 답글 등록: ${result.skippedAnswered}건`
-                ].join("\n"));
+            if (result.status === "EMPTY") {
+                showSelectionSummary(category, result, false);
                 return;
             }
             const messages = {
-                WAIT: "리뷰 목록을 찾지 못했습니다. 스마트스토어에서 리뷰를 검색해 주세요.",
+                WAIT: noReviewsMessage,
+                SELECTION_FAILED: "답글 대상 리뷰 전체를 선택하지 못해 작성창을 열지 않았습니다.",
                 NO_BUTTON: "스마트스토어의 답글작성 버튼을 찾지 못했습니다.",
                 NO_REPLY_FIELD: "일괄 답글 창의 두 번째 입력칸을 확인하지 못했습니다.",
                 REVIEW_NUMBER_MISMATCH: "선택한 리뷰와 답글 창에 표시된 리뷰 글번호가 일치하지 않아 중단했습니다."
