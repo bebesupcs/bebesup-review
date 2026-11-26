@@ -44,7 +44,7 @@
                 베베숲 AI
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.18 (혼합 리뷰 불만 유형 구분)
+                v2.8.19 (실제 리뷰 기준 선별 보완)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -409,8 +409,12 @@
     function getReviewIssueText(text) {
         return text
             .replace(/이(?=물\s*티슈)/gu, "이 ")
-            .replace(/(?:발진|두드러기|트러블|피부염|알레르기|가려움)(?:도|이|가|은|는)?\s*(?:없이|없었어요|없었습니다|없네요|없어요|없습니다)(?=[\s.!?,。]|$)/gu, " ")
+            .replace(/(?:발진|두드러기|트러블|피부염|알레르기|가려움)(?:도|이|가|은|는)?\s*(?:없이|없고|없어서|없었어요|없었습니다|없네요|없어요|없습니다)(?=[\s.!?,。]|$)/gu, " ")
             .replace(/찢어지지\s*않고(?=\s*(?:탄탄|튼튼|견고))/gu, " ")
+            .replace(/(?:마르지|찢어지지|얇지|자극적이지)\s*않(?:고|아서|아|아요|습니다|았고|았습니다|았어요)(?=[\s.!?,。~^]|$)/gu, " ")
+            .replace(/잘\s*안\s*찢어져요(?=[\s.!?,。~^]|$)/gu, " ")
+            .replace(/얇아서(?=[^.!?。]{0,25}넣어\s*두기\s*편)/gu, " ")
+            .replace(/건조한(?=\s*(?:아이|아기)?\s*피부를\s*촉촉)/gu, " ")
             .replace(/더러워지면\s*(?:그냥\s*)?버리(?:고|거나|면|는)/gu, " ");
     }
 
@@ -484,7 +488,7 @@
                     rootCause = specificComplaint.detail;
                     action = specificComplaint.action;
                     isYellow = true;
-                } else if (["반품", "새거가 아닌", "새것이 아닌", "새상품이 아닌", "새제품이 아닌", "중고", "누가 쓰던", "쓰던", "개봉", "뜯어진", "포장지", "포장 불량", "포장 상태", "포장 엉망", "포장이 엉망", "변색", "지워지지", "주의부탁", "주의 부탁", "배송 오류", "배송오류", "오배송", "누락", "배송에 이런"].some(k => text.includes(k))) {
+                } else if (["반품", "새거가 아닌", "새것이 아닌", "새상품이 아닌", "새제품이 아닌", "중고", "누가 쓰던", "개봉", "뜯어진", "포장지", "포장 불량", "포장 상태", "포장 엉망", "포장이 엉망", "변색", "지워지지", "주의부탁", "주의 부탁", "배송 오류", "배송오류", "오배송", "누락", "배송에 이런"].some(k => text.includes(k))) {
                     issueCounts["배송/박스파손"]++;
                     issueType = "배송/포장/반품의심/변색";
                     rootCause = "반품/중고 의심 또는 외관 포장 오염/변색/배송 착오";
@@ -1351,13 +1355,27 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         "물티슈", "비데티슈", "손입티슈"
     ];
 
+    // 판매 상품명에서 품목명이 빠진 물티슈 규격. 브랜드·라인·규격이 모두 일치할 때만 사용한다.
+    const labeledWipesProducts = new Set([
+        "베베숲 시그니처 블루 32매 슬림 캡 12팩",
+        "베베숲 라이트 20매 휴대 캡 16팩",
+        "베베숲 프리미어 20매 휴대 캡 12팩",
+        "베베숲 카밍플러스 70매 캡 10팩 / 75평량",
+        "베베숲 시그니처 그린 20매 휴대 캡 12팩",
+        "베베숲 시그니처 블루 에코 20매 휴대 12팩 캡 생분해 원단",
+        "베베숲 센시티브 20매 휴대 캡 12팩",
+        "베베숲 제로 플레인 20매 휴대 캡 16팩",
+        "베베숲 시그니처 위드블루 70매 캡 10팩"
+    ].map(name => name.replace(/\s+/g, "")));
+
     function classifyProductCategory(prodName, optionInfo = "") {
         const name = prodName.toLowerCase().replace(/\s+/g, "");
         const option = optionInfo.toLowerCase().replace(/\s+/g, "");
         const matches = (value, keywords) => keywords.some(keyword => value.includes(keyword.replace(/\s+/g, "")));
         const skincare = matches(name, skincareKeywords);
         const detergent = matches(name, detergentKeywords);
-        const wipes = matches(name, wipesKeywords);
+        const skuName = name.replace(/^(?:\[[^\]]+\]|\(n멤버십무료배송\))+/gu, "");
+        const wipes = matches(name, wipesKeywords) || labeledWipesProducts.has(skuName);
         const skincareOption = matches(option, skincareKeywords);
         const detergentOption = matches(option, detergentKeywords);
 
@@ -1378,7 +1396,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         // 🟡 2. 중고/반품의심/개봉/포장 불량/변색/박스 파손 (DEFECT & PACKAGING)
         "반품된", "반품된걸", "반품된거", "반품 건", "반품건", "반품 제품", "반품제품", "반품",
         "새거가 아닌", "새것이 아닌", "새상품이 아닌", "새제품이 아닌", "새거 아니", "새것 아니",
-        "중고", "누가 쓰던", "쓰던 거", "쓰던거", "쓰던 것", "개봉된", "개봉 흔적", "뜯어진", "뜯겨", "재포장",
+        "중고", "누가 쓰던", "사용 흔적", "개봉된", "개봉 흔적", "뜯어진", "뜯겨", "재포장",
         "변색", "하얗게 변", "누렇게", "색이 변", "포장지", "포장 불량", "포장상태", "포장 상태", "포장 엉망", "포장이 엉망",
         "깨끗하지 못", "깨끗하지 않", "지워지지", "안 지워", "안지워", "주의부탁", "주의 부탁", "주의해주", "주의해 주", "배송에 이런",
         "박스 파손", "박스파손", "박스 찢", "박스가 찢", "박스가 터", "박스 터", "박스 찌그", "박스가 찌그", "박스 구겨", "박스가 엉망", "박스 뜯", "박스 개봉",
@@ -1423,6 +1441,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         const text = reviewText.replace(/\s+/g, " ");
         const issueText = getReviewIssueText(text);
         if (getSpecificComplaint(issueText) || badWords.some(word => issueText.includes(word))) return "complaint";
+        if (/얇은\s*편이고|얇긴\s*한데|향이\s*좀\s*있|향이[^.!?。]{0,18}무향이\s*좋|캡\s*없는\s*상품(?:도|이)?\s*나왔으면|가격이\s*부담/u.test(issueText)) return "complaint";
         if (/만족스럽지|만족하지\s*않|불만족|좋지는?\s*않|좋지\s*못|추천하지\s*않|추천\s*안|(?:마음|맘)에\s*(?:안\s*들|들지\s*않)|기대\s*(?:이하|만큼은?\s*아니)|(?:뽑기|꺼내기|쓰기|사용하기)(?:가|는)?\s*(?:힘들|어렵|불편)|(?:배송|택배|도착)[^.!?。]{0,35}(?:(?:며칠|몇\s*주|일주일|[3-9]\s*일)(?:이나|씩)?\s*기다|너무\s*오래\s*걸)/u.test(text)) {
             return "complaint";
         }
@@ -1431,7 +1450,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
         const positive = /좋아요|좋네요|좋습니다|좋았|좋고|좋은\s*거\s*같|만족|추천해|추천합니다|잘\s*(?:쓰|쓸|사용|닦)|(?:마음|맘)에\s*들|배송(?:이|도)?\s*빠르|부드러워|부드럽습니다|촉촉해|최고|훌륭|정착/u;
         if (positive.test(text)) return null;
-        if (score >= 4 && /굿|재구매|늘\s*쓰|항상\s*(?:쓰|사|구매)|꾸준히\s*(?:쓰|사용|구매)|믿고\s*(?:쓰|사|구매)|또\s*(?:살|시킬|구매)/u.test(text)) return null;
+        if (score >= 4 && /굿|재구매|늘\s*쓰|항상\s*(?:쓰|사|구매)|꾸준히\s*(?:쓰|사용|구매)|믿고\s*(?:쓰|사|구매)|또\s*(?:살|시킬|구매|주문)|계속\s*구매|이것만\s*사용|(?:베베숲만|이거만)\s*써|자주\s*사는|결국\s*여기로\s*돌아|쟁여템|배송(?:이|도)?\s*(?:(?:엄청|진짜|정말|너무)\s*)?(?:빠르|빨라)|빠른\s*배송\s*감사|좋은\s*(?:상품|제품|사이즈)|제품도\s*좋|좋으네요|좋아여|좋[다아]\s*하시|좋아하세요|좋다고\s*하네|(?:패키지|디자인)(?:가|이)?\s*(?:참\s*)?(?:이쁘|예쁘)|마음이\s*편|(?:마음|맘)에\s*드네|도톰하고|두께도\s*(?:도톰|적당|괜찮)|두껍고\s*쓸만|(?:가성비|가격\s*대비)\s*(?:좋|괜찮)|가격(?:도|이)?\s*저렴|잘\s*맞아요|잘\s*샀|편리해요|편합니다|편하고|들고\s*다니기\s*딱|휴대용으로\s*딱|촉촉하게\s*(?:잘|해)|튼튼해요|최신\s*제조\s*상품[^.!?。]{0,35}넉넉하게/u.test(text)) return null;
         return "notPraise";
     }
 
