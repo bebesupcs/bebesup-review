@@ -44,7 +44,7 @@
                 베베숲 AI
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.14 (답글 가능·제외 건수 표시)
+                v2.8.15 (답글 후보가 있는 다음 페이지 탐색)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -265,6 +265,56 @@
             isAnswered: /^(?:Y|답글(?:등록|완료)|답변완료|등록(?:완료)?)$/i.test(replyStatus),
             replyStatusKnown: /^(?:N|Y|(?:답글)?미등록|답글(?:등록|완료)|답변완료|등록(?:완료)?)$/i.test(replyStatus)
         };
+    }
+
+    function getReviewPager(info) {
+        const pagers = [...info.doc.querySelectorAll("nav, [role='navigation']")].filter(nav =>
+            Boolean(info.table.compareDocumentPosition(nav) & 4) && isVisible(nav) &&
+            [...nav.querySelectorAll("button, a")].some(control => /^\d+$/.test(control.textContent.trim())));
+        if (pagers.length !== 1) return null;
+
+        const controls = [...pagers[0].querySelectorAll("button, a")].filter(isVisible);
+        const numbered = controls.filter(control => /^\d+$/.test(control.textContent.trim()));
+        if (!numbered.length) return null;
+        const enabled = control => control && !control.disabled && control.getAttribute("aria-disabled") !== "true";
+        const active = numbered.find(control => control.getAttribute("aria-current") === "page" ||
+            control.getAttribute("aria-selected") === "true" || control.getAttribute("aria-pressed") === "true" ||
+            /(?:^|[\s_-])(?:is[-_]?)?(?:active|selected|current|on)(?:$|[\s_-])/i.test(control.className + " " + control.parentElement.className));
+        const currentControl = active || numbered.find(control => !enabled(control)) || (numbered.length === 1 ? numbered[0] : null);
+        const current = currentControl ? Number(currentControl.textContent.trim()) : null;
+        const nextNumber = current === null ? null : numbered.find(control => Number(control.textContent.trim()) === current + 1);
+        if (enabled(nextNumber)) return { next: nextNumber };
+        const afterNumbers = controls.slice(controls.indexOf(numbered.at(-1)) + 1);
+        const onLastNumber = current === Number(numbered.at(-1).textContent.trim());
+        const nextArrow = afterNumbers.find(control =>
+            /^(?:다음\s*페이지|next\s*page)$/i.test((control.getAttribute("aria-label") || control.title || control.textContent).trim())) ||
+            (onLastNumber && afterNumbers.length === 1 ? afterNumbers[0] : null);
+        if (nextArrow) return { next: enabled(nextArrow) ? nextArrow : null };
+        return onLastNumber && afterNumbers.length === 0 ? { next: null } : null;
+    }
+
+    function getVisibleReviewPageKey(info) {
+        if (info.type !== "AG_GRID") return info.rows.slice(0, 3).map(row => row.innerText).join("|");
+        const partsByRow = getRenderedGridRows(info.table);
+        return [...partsByRow.keys()].slice(0, 4)
+            .map(row => extractRenderedGridReview({ ...info, partsByRow }, row).reviewNo).filter(Boolean).join("|");
+    }
+
+    async function advanceReviewPage(info, pager) {
+        const previous = getVisibleReviewPageKey(info);
+        if (!previous) return false;
+        pager.next.click();
+        let changedKey = "";
+        for (let attempt = 0; attempt < 50; attempt++) {
+            await sleep(200);
+            const nextInfo = findReviewTableInfo();
+            if (!nextInfo.rows.length || nextInfo.doc !== info.doc) continue;
+            const currentKey = getVisibleReviewPageKey(nextInfo);
+            if (!currentKey || currentKey === previous) continue;
+            if (currentKey === changedKey) return true;
+            changedKey = currentKey;
+        }
+        return false;
     }
 
     function getGridApi() {
@@ -1482,7 +1532,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     }
 
     // 단일 배치(50개) 처리 함수
-    async function prepareReplyBatch(category, testOnly = false) {
+    async function prepareReplyBatch(category, testOnly = false, visited = new Set()) {
         const catLabel = getCategoryLabel(category);
         // 🌿 물티슈/전라인 전용 정성 공식 답글
         let replyMsg = "안녕하세요. 베베숲입니다. 소중한 리뷰 감사드립니다.\n언제나 아기 피부에 닿는 만큼 더욱 순하고 도톰하게 정성을 담겠습니다.\n궁금한 점이 생기시면 언제든 편하게 말씀해 주세요😊\n앞으로도 만족스러운 경험을 드릴 수 있도록 노력하겠습니다💚";
@@ -1503,12 +1553,14 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         const excluded = { answered: 0, lowScore: 0, complaint: 0, notPraise: 0, unreadable: 0 };
         const selectedReviewNumbers = new Set();
         const candidates = [];
+        let firstReviewNo = "";
 
         const BATCH_TARGET_LIMIT = 50;
 
         const isGrid = reviewInfo.type === "AG_GRID";
         const checked = await visitReviewPage(reviewInfo, (rowData, checkbox) => {
             const { reviewNo, prodName, optionInfo, reviewText, score, isAnswered } = rowData;
+            if (!firstReviewNo && reviewNo) firstReviewNo = reviewNo;
 
             const detectedCategory = classifyProductCategory(prodName, optionInfo);
             if (!detectedCategory) {
@@ -1539,9 +1591,11 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         const batch = candidates.slice(0, BATCH_TARGET_LIMIT);
         const summary = {
             checked, eligible: candidates.length, batchSize: batch.length,
-            excluded, otherCategory, unknownCategory
+            excluded, otherCategory, unknownCategory, reviewInfo
         };
         if (testOnly) return { status: "TESTED", ...summary };
+        if (firstReviewNo && visited.has(firstReviewNo)) return { status: "PAGE_REPEAT" };
+        if (firstReviewNo) visited.add(firstReviewNo);
         if (batch.length === 0) return { status: "EMPTY", ...summary };
 
         const wanted = new Set(batch);
@@ -1592,6 +1646,23 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         return { status: "READY", count: selectedCount };
     }
 
+    async function findAndPrepareReplyBatch(category) {
+        const visited = new Set();
+        let checkedPages = 0;
+        let checkedReviews = 0;
+        while (true) {
+            const result = await prepareReplyBatch(category, false, visited);
+            if (result.status !== "EMPTY") return result;
+            checkedPages++;
+            checkedReviews += result.checked;
+            const pager = getReviewPager(result.reviewInfo);
+            if (!pager) return { status: "PAGER_UNCONFIRMED", checkedPages, checkedReviews };
+            if (!pager.next) return { status: "EMPTY", checkedPages, checkedReviews };
+            runBtn.innerText = "⏳ 다음 페이지에서 답글 후보 찾는 중...";
+            if (!await advanceReviewPage(result.reviewInfo, pager)) return { status: "PAGE_CHANGE_FAILED" };
+        }
+    }
+
     const testBtn = panel.querySelector("#bebesup-test-btn");
     const noReviewsMessage = "리뷰 목록을 찾지 못했습니다. 스마트스토어에서 리뷰를 검색해 주세요.";
     function showSelectionSummary(category, result, testOnly) {
@@ -1640,7 +1711,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         runBtn.innerText = "⏳ 리뷰 선별 중...";
         try {
             const category = catSelect.value;
-            const result = await prepareReplyBatch(category);
+            const result = await findAndPrepareReplyBatch(category);
             if (result.status === "READY") {
                 runBtn.innerText = `✅ 답글 ${result.count}건 입력 완료`;
                 return;
@@ -1648,11 +1719,17 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
             runBtn.innerText = "▶ 답글 작성 테스트";
             if (result.status === "EMPTY") {
-                showSelectionSummary(category, result, false);
+                alert(`${result.checkedPages}페이지에서 ${result.checkedReviews}건을 검사했습니다. 마지막 페이지까지 답글 작성 가능한 리뷰가 없습니다.`);
+                return;
+            }
+            if (result.status === "PAGER_UNCONFIRMED") {
+                alert(`${result.checkedPages}페이지에서 ${result.checkedReviews}건을 검사했지만 작성 대상이 없었습니다. 다음 페이지 버튼을 확인하지 못했습니다.`);
                 return;
             }
             const messages = {
                 WAIT: noReviewsMessage,
+                PAGE_REPEAT: "같은 리뷰 페이지가 다시 표시되어 탐색을 중단했습니다.",
+                PAGE_CHANGE_FAILED: "다음 페이지의 리뷰가 표시되는지 확인하지 못했습니다.",
                 SELECTION_FAILED: "답글 대상 리뷰 전체를 선택하지 못해 작성창을 열지 않았습니다.",
                 NO_BUTTON: "스마트스토어의 답글작성 버튼을 찾지 못했습니다.",
                 NO_REPLY_FIELD: "일괄 답글 창의 두 번째 입력칸을 확인하지 못했습니다.",
