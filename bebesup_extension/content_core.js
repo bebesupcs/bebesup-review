@@ -44,7 +44,7 @@
                 베베숲 AI
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.15 (답글 후보가 있는 다음 페이지 탐색)
+                v2.8.16 (리뷰 문맥에 따른 RED 오분류 수정)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -406,6 +406,14 @@
         return null;
     }
 
+    function getReviewIssueText(text) {
+        return text
+            .replace(/이(?=물\s*티슈)/gu, "이 ")
+            .replace(/(?:발진|두드러기|트러블|피부염|알레르기|가려움)(?:도|이|가|은|는)?\s*(?:없이|없었어요|없었습니다|없네요|없어요|없습니다)(?=[\s.!?,。]|$)/gu, " ")
+            .replace(/찢어지지\s*않고(?=\s*(?:탄탄|튼튼|견고))/gu, " ")
+            .replace(/더러워지면\s*(?:그냥\s*)?버리(?:고|거나|면|는)/gu, " ");
+    }
+
     function analyzeReviewData(rawReviews) {
         let redCount = 0;
         let yellowCount = 0;
@@ -425,7 +433,8 @@
         };
 
         const analyzedList = rawReviews.map((r, i) => {
-            const text = String(r.text || "").trim();
+            const originalText = String(r.text || "").trim();
+            const text = getReviewIssueText(originalText);
             const score = r.score ?? 0;
             if (score > 0) {
                 totalScore += score;
@@ -529,7 +538,7 @@
                 date: r.date || "-",
                 prodName: r.prodName || "-",
                 score,
-                text,
+                text: originalText,
                 grade,
                 issueType,
                 rootCause,
@@ -1388,7 +1397,8 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         if (![3, 4, 5].includes(score) || !reviewText || /(?:\.{3}|…)$/u.test(reviewText)) return "unreadable";
 
         const text = reviewText.replace(/\s+/g, " ");
-        if (badWords.some(word => text.includes(word))) return "complaint";
+        const issueText = getReviewIssueText(text);
+        if (badWords.some(word => issueText.includes(word))) return "complaint";
         if (/만족스럽지|만족하지\s*않|불만족|좋지는?\s*않|좋지\s*못|추천하지\s*않|추천\s*안|(?:마음|맘)에\s*(?:안\s*들|들지\s*않)|기대\s*(?:이하|만큼은?\s*아니)|(?:뽑기|꺼내기|쓰기|사용하기)(?:가|는)?\s*(?:힘들|어렵|불편)|(?:배송|택배|도착)[^.!?。]{0,35}(?:(?:며칠|몇\s*주|일주일|[3-9]\s*일)(?:이나|씩)?\s*기다|너무\s*오래\s*걸)/u.test(text)) {
             return "complaint";
         }
