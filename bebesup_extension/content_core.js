@@ -44,7 +44,7 @@
                 베베숲 AI
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.12 (리뷰 선별 테스트)
+                v2.8.13 (페이지 전체 리뷰 검증)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -60,7 +60,7 @@
                 선별 테스트
             </button>
             <button id="bebesup-run-btn" style="background:#00b050; color:white; border:none; padding:6px 14px; border-radius:20px; font-size:11px; font-weight:bold; cursor:pointer; transition:all 0.2s; white-space:nowrap;">
-                ▶ 자동 실행 시작
+                ▶ 답글 작성 테스트
             </button>
 
             <!-- 📊 실시간 AI 분석 대시보드 버튼 -->
@@ -146,17 +146,7 @@
                 if (!["상품명", "리뷰내용", "리뷰글번호", "답글여부"].every(label => columns.has(label)) ||
                     !["구매자평점", "평점", "별점"].some(label => columns.has(label))) continue;
 
-                const rowParts = new Map();
-                for (const row of grid.querySelectorAll(".ag-row[row-id], .ag-row[row-index]")) {
-                    const key = row.getAttribute("row-id") || row.getAttribute("row-index");
-                    if (!rowParts.has(key)) rowParts.set(key, []);
-                    rowParts.get(key).push(row);
-                }
-                const partsByRow = new Map();
-                for (const parts of rowParts.values()) {
-                    const row = parts.find(part => part.querySelector("input[type='checkbox']")) || parts[0];
-                    partsByRow.set(row, parts);
-                }
+                const partsByRow = getRenderedGridRows(grid);
                 if (partsByRow.size > 0) {
                     return { doc, type: "AG_GRID", table: grid, rows: [...partsByRow.keys()], columns, partsByRow };
                 }
@@ -183,6 +173,69 @@
         return { doc: document, type: "NONE", rows: [] };
     }
 
+    function getRenderedGridRows(grid) {
+        const rowParts = new Map();
+        for (const row of grid.querySelectorAll(".ag-row[row-id], .ag-row[row-index]")) {
+            const key = row.getAttribute("row-id") || row.getAttribute("row-index");
+            if (!rowParts.has(key)) rowParts.set(key, []);
+            rowParts.get(key).push(row);
+        }
+        const partsByRow = new Map();
+        for (const parts of rowParts.values()) {
+            const row = parts.find(part => part.querySelector("input[type='checkbox']")) || parts[0];
+            partsByRow.set(row, parts);
+        }
+        return partsByRow;
+    }
+
+    async function visitReviewPage(info, visit) {
+        const isGrid = info.type === "AG_GRID";
+        const seen = new Set();
+        const globalList = isGrid ? [] : getGlobalReviewList(info.doc);
+        const tableColumns = isGrid ? null : resolveTableColIndexes(info.table);
+        const readRows = () => {
+            if (!info.table?.isConnected) throw new Error("리뷰 목록이 바뀌었습니다. 검색 결과가 표시되면 다시 실행해 주세요.");
+            const partsByRow = isGrid ? getRenderedGridRows(info.table) : null;
+            const rows = partsByRow ? [...partsByRow.keys()] : info.rows;
+            for (const [index, row] of rows.entries()) {
+                const key = isGrid ? row.getAttribute("row-id") || row.getAttribute("row-index") : index;
+                if (seen.has(key)) continue;
+                const data = isGrid ? extractRenderedGridReview({ ...info, partsByRow }, row) :
+                    extractSmartStoreRowData(row, tableColumns, globalList);
+                seen.add(key);
+                visit(data, row.querySelector("input[type='checkbox']"));
+            }
+        };
+        const viewport = isGrid && [...info.table.querySelectorAll(".ag-body-viewport, .ag-body-vertical-scroll-viewport")]
+            .find(el => el.clientHeight > 0 && el.scrollHeight > el.clientHeight + 1);
+        if (!viewport) {
+            readRows();
+            return seen.size;
+        }
+
+        const originalTop = viewport.scrollTop;
+        const render = () => new Promise(resolve => {
+            info.doc.defaultView.requestAnimationFrame(() => info.doc.defaultView.requestAnimationFrame(resolve));
+        });
+        try {
+            viewport.scrollTop = 0;
+            await render();
+            const step = Math.max(1, Math.floor(viewport.clientHeight * 0.8));
+            while (true) {
+                readRows();
+                const top = viewport.scrollTop;
+                const bottom = viewport.scrollHeight - viewport.clientHeight;
+                if (top >= bottom - 1) break;
+                viewport.scrollTop = Math.min(top + step, bottom);
+                await render();
+                if (viewport.scrollTop <= top) throw new Error("리뷰 페이지 끝까지 읽지 못했습니다.");
+            }
+        } finally {
+            viewport.scrollTop = originalTop;
+        }
+        return seen.size;
+    }
+
     function extractRenderedGridReview(grid, row) {
         const cells = new Map();
         for (const part of grid.partsByRow.get(row)) {
@@ -206,6 +259,8 @@
         return {
             reviewNo: /^\d+$/.test(reviewNo) ? reviewNo : "",
             score, prodName, reviewText,
+            author: read(cell("등록자")),
+            date: read(cell("리뷰등록일")),
             optionInfo: read(cell("옵션", "옵션명")),
             isAnswered: /^(?:Y|답글(?:등록|완료)|답변완료|등록(?:완료)?)$/i.test(replyStatus),
             replyStatusKnown: /^(?:N|Y|(?:답글)?미등록|답글(?:등록|완료)|답변완료|등록(?:완료)?)$/i.test(replyStatus)
@@ -500,7 +555,7 @@
                     <div>
                         <div style="font-size:18px; font-weight:bold; display:flex; align-items:center; gap:8px;">
                             <span>🌿 베베숲 스마트스토어 실시간 리뷰 AI 분석 리포트</span>
-                            <span style="background:rgba(255,255,255,0.25); font-size:11px; padding:2px 8px; border-radius:12px;">무다운로드 실시간 전수분석</span>
+                            <span style="background:rgba(255,255,255,0.25); font-size:11px; padding:2px 8px; border-radius:12px;">현재 검색 페이지</span>
                         </div>
                         <div style="font-size:12px; opacity:0.9; margin-top:4px;">
                             총 분석 건수: <b>${data.total}건</b> | 평균 평점: <b>★ ${data.avgScore} / 5.0</b>
@@ -529,7 +584,7 @@
                     <div style="background:white; border:1.5px solid #10b981; border-radius:10px; padding:12px; text-align:center;">
                         <div style="font-size:11px; color:#059669; font-weight:bold;">🟢 만족/칭찬 (GREEN)</div>
                         <div style="font-size:22px; font-weight:bold; color:#059669; margin-top:2px;">${data.greenCount}<span style="font-size:13px; font-weight:normal;">건</span></div>
-                        <div style="font-size:11px; color:#059669; margin-top:2px;">${greenRate}% (답글 완료)</div>
+                        <div style="font-size:11px; color:#059669; margin-top:2px;">${greenRate}% (분석 분류)</div>
                     </div>
                 </div>
 
@@ -576,7 +631,7 @@
                 <!-- 푸터 액션 바 -->
                 <div style="padding:12px 24px; background:#f8fafc; border-top:1px solid #e2e8f0; display:flex; justify-content:space-between; align-items:center;">
                     <div style="font-size:12px; color:#64748b;">
-                        💡 팁: 스마트스토어 화면 표 우측 상단에서 <b>[500개씩]</b>을 선택하시면 한 번에 500건씩 초고속 분석됩니다.
+                        현재 검색 페이지에서 읽은 리뷰입니다. 다음 페이지는 이동해서 분석해 주세요.
                     </div>
                     <div style="display:flex; gap:8px;">
                         <button id="export-csv-btn" style="background:#10b981; color:white; border:none; padding:8px 16px; border-radius:8px; font-size:12px; font-weight:bold; cursor:pointer;">
@@ -1298,6 +1353,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     // 분석 버튼 클릭 핸들러
     const analyzeBtn = panel.querySelector("#bebesup-analyze-btn");
     analyzeBtn.onclick = async () => {
+        if (preparingReply) return;
         const api = getGridApi();
         const reviewInfo = findReviewTableInfo();
         if (!api && reviewInfo.rows.length === 0) {
@@ -1305,59 +1361,75 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         }
 
         analyzeBtn.innerText = "⏳ 전수 분석 중...";
+        preparingReply = true;
+        analyzeBtn.disabled = true;
 
         const { scoreColId, prodColId, contentColId } = api ? resolveAgGridCols(api) : {};
         const reviews = [];
-        if (api && typeof api.forEachNode === "function") {
-            api.forEachNode(node => {
-                const d = node.data || {};
-                const rowEl = document.querySelector(`.ag-row[row-id="${node.id}"], .ag-row[row-index="${node.rowIndex}"]`);
+        try {
+            if (reviewInfo.type === "AG_GRID") {
+                await visitReviewPage(reviewInfo, row => reviews.push({
+                    id: row.reviewNo || "-",
+                    author: row.author || "-",
+                    date: row.date || "-",
+                    prodName: row.prodName || "베베숲 제품",
+                    score: row.score,
+                    text: row.reviewText
+                }));
+            } else if (api && typeof api.forEachNode === "function") {
+                api.forEachNode(node => {
+                    const d = node.data || {};
+                    const rowEl = document.querySelector(`.ag-row[row-id="${node.id}"], .ag-row[row-index="${node.rowIndex}"]`);
 
-                const score = extractReviewScore(d, rowEl, scoreColId, -1, api, node);
-                const prodName = extractProductName(d, rowEl, prodColId, -1, api, node) || "베베숲 제품";
-                const text = extractReviewContent(d, rowEl, contentColId, -1, api, node);
+                    const score = extractReviewScore(d, rowEl, scoreColId, -1, api, node);
+                    const prodName = extractProductName(d, rowEl, prodColId, -1, api, node) || "베베숲 제품";
+                    const text = extractReviewContent(d, rowEl, contentColId, -1, api, node);
 
-                reviews.push({
-                    id: d.reviewId || d.reviewNo || d.id || "-",
-                    author: d.writerMemberId || d.writer || d.memberId || "-",
-                    date: d.reviewRegisteredDate || d.regDate || "-",
-                    prodName: prodName,
-                    score: score,
-                    text: text
+                    reviews.push({
+                        id: d.reviewId || d.reviewNo || d.id || "-",
+                        author: d.writerMemberId || d.writer || d.memberId || "-",
+                        date: d.reviewRegisteredDate || d.regDate || "-",
+                        prodName: prodName,
+                        score: score,
+                        text: text
+                    });
                 });
-            });
-        } else if (reviewInfo.rows.length > 0) {
-            const globalReviewList = getGlobalReviewList(reviewInfo.doc);
-            const { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx } = reviewInfo.table ? resolveTableColIndexes(reviewInfo.table) : {};
-            reviewInfo.rows.forEach((tr, idx) => {
-                const rowData = reviewInfo.type === "AG_GRID" ? extractRenderedGridReview(reviewInfo, tr) :
-                    extractSmartStoreRowData(tr, { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx }, globalReviewList);
-                const score = rowData.score;
-                const prodName = rowData.prodName || "베베숲 제품";
-                const text = rowData.reviewText;
+            } else if (reviewInfo.rows.length > 0) {
+                const globalReviewList = getGlobalReviewList(reviewInfo.doc);
+                const { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx } = reviewInfo.table ? resolveTableColIndexes(reviewInfo.table) : {};
+                reviewInfo.rows.forEach((tr, idx) => {
+                    const rowData = extractSmartStoreRowData(tr, { scoreColIdx, prodColIdx, contentColIdx, replyColIdx, reviewNoColIdx }, globalReviewList);
+                    const score = rowData.score;
+                    const prodName = rowData.prodName || "베베숲 제품";
+                    const text = rowData.reviewText;
 
-                const idMatch = text.match(/\b\d{9,11}\b/);
-                const dateMatch = (tr.innerText || "").match(/\d{4}\.\d{2}\.\d{2}/);
+                    const idMatch = text.match(/\b\d{9,11}\b/);
+                    const dateMatch = (tr.innerText || "").match(/\d{4}\.\d{2}\.\d{2}/);
 
-                reviews.push({
-                    id: rowData.reviewNo || (idMatch ? idMatch[0] : `REV-${idx + 1}`),
-                    author: (tr.innerText || "").match(/[a-zA-Z0-9_*]{3,12}/)?.[0] || "-",
-                    date: dateMatch ? dateMatch[0] : "-",
-                    prodName: prodName,
-                    score: score,
-                    text: text
+                    reviews.push({
+                        id: rowData.reviewNo || (idMatch ? idMatch[0] : `REV-${idx + 1}`),
+                        author: (tr.innerText || "").match(/[a-zA-Z0-9_*]{3,12}/)?.[0] || "-",
+                        date: dateMatch ? dateMatch[0] : "-",
+                        prodName: prodName,
+                        score: score,
+                        text: text
+                    });
                 });
-            });
-        }
+            }
 
-        if (reviews.length === 0) {
+            if (reviews.length === 0) {
+                analyzeBtn.innerText = "📊 실시간 AI 분석";
+                return alert("⚠️ 현재 화면에 분석할 리뷰가 없습니다. 상단에서 [검색]을 먼저 진행해 주세요!");
+            }
+
+            showAnalysisDashboardModal(analyzeReviewData(reviews));
+        } catch (error) {
+            alert(error.message);
+        } finally {
+            preparingReply = false;
+            analyzeBtn.disabled = false;
             analyzeBtn.innerText = "📊 실시간 AI 분석";
-            return alert("⚠️ 현재 화면에 분석할 리뷰가 없습니다. 상단에서 [검색]을 먼저 진행해 주세요!");
         }
-
-        const analysisResult = analyzeReviewData(reviews);
-        analyzeBtn.innerText = "📊 실시간 AI 분석";
-        showAnalysisDashboardModal(analysisResult);
     };
 
     // ========================================================
@@ -1435,57 +1507,47 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
         const BATCH_TARGET_LIMIT = 50;
 
         const isGrid = reviewInfo.type === "AG_GRID";
-        const globalReviewList = isGrid ? [] : getGlobalReviewList(reviewInfo.doc);
-        const tableColumns = isGrid ? null : resolveTableColIndexes(reviewInfo.table);
-
-        for (const tr of reviewInfo.rows) {
-
-            // 행별 원본 데이터(상품명, 옵션명, 본문원문, 평점, 답글여부) 전방위 정밀 추출
-            const rowData = isGrid ? extractRenderedGridReview(reviewInfo, tr) :
-                extractSmartStoreRowData(tr, tableColumns, globalReviewList);
+        const checked = await visitReviewPage(reviewInfo, (rowData, checkbox) => {
             const { reviewNo, prodName, optionInfo, reviewText, score, isAnswered } = rowData;
 
             // 1. 이미 답글완료 건 제외
             if (isAnswered) {
                 skippedAnswered++;
-                continue;
+                return;
             }
 
             if (score === null || !reviewText || /(?:\.{3}|…)$/u.test(reviewText) ||
-                !/^\d+$/.test(reviewNo) || (isGrid && !rowData.replyStatusKnown)) {
+                !/^\d+$/.test(reviewNo) || (isGrid && !rowData.replyStatusKnown) || !checkbox || checkbox.disabled) {
                 skippedUnreadable++;
-                continue;
+                return;
             }
             if (!isEligibleReview(score, reviewText)) {
                 skippedBad++;
-                continue;
+                return;
             }
 
             if (classifyProductCategory(prodName, optionInfo) !== category) {
                 skippedCategory++;
-                continue;
+                return;
             }
 
-            const chk = tr.querySelector("input[type='checkbox']");
-            if (chk && !chk.disabled) candidates.push({ checkbox: chk, reviewNo });
-        }
+            candidates.push(reviewNo);
+        });
 
         const batch = candidates.slice(0, BATCH_TARGET_LIMIT);
         const summary = {
-            checked: reviewInfo.rows.length, eligible: candidates.length, batchSize: batch.length,
+            checked, eligible: candidates.length, batchSize: batch.length,
             skippedAnswered, skippedBad, skippedUnreadable, skippedCategory
         };
         if (testOnly) return { status: "TESTED", ...summary };
         if (batch.length === 0) return { status: "EMPTY", ...summary };
 
-        for (const row of reviewInfo.rows) {
-            const checkbox = row.querySelector("input[type='checkbox']");
-            if (checkbox?.checked && !checkbox.disabled) checkbox.click();
-        }
-        for (const { checkbox, reviewNo } of batch) {
-            if (!checkbox.checked) checkbox.click();
-            if (checkbox.checked) selectedReviewNumbers.add(reviewNo);
-        }
+        const wanted = new Set(batch);
+        await visitReviewPage(reviewInfo, ({ reviewNo }, checkbox) => {
+            if (!checkbox || checkbox.disabled) return;
+            if (checkbox.checked !== wanted.has(reviewNo)) checkbox.click();
+            if (checkbox.checked && wanted.has(reviewNo)) selectedReviewNumbers.add(reviewNo);
+        });
         const selectedCount = selectedReviewNumbers.size;
         if (selectedCount !== batch.length) return { status: "SELECTION_FAILED" };
 
@@ -1533,7 +1595,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     function showSelectionSummary(category, result, testOnly) {
         alert([
             `[${getCategoryLabel(category)}] ${testOnly ? "선별 테스트 결과" : "답글 대상 0건"}`,
-            `현재 화면에서 확인: ${result.checked}건`,
+            `현재 검색 페이지에서 읽음: ${result.checked}건`,
             `답글 후보: ${result.eligible}건 (이번 배치 최대 ${result.batchSize}건)`,
             `저평점·불만 또는 칭찬 기준 미충족: ${result.skippedBad}건`,
             `리뷰 정보 미확인: ${result.skippedUnreadable}건`,
@@ -1545,6 +1607,9 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
     let preparingReply = false;
     testBtn.onclick = async () => {
         if (preparingReply) return;
+        preparingReply = true;
+        testBtn.disabled = true;
+        testBtn.innerText = "페이지 검사 중...";
         const category = catSelect.value;
         try {
             const result = await prepareReplyBatch(category, true);
@@ -1552,6 +1617,10 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             else showSelectionSummary(category, result, true);
         } catch (error) {
             alert(`선별 테스트 중 오류가 발생했습니다: ${error.message}`);
+        } finally {
+            preparingReply = false;
+            testBtn.disabled = false;
+            testBtn.innerText = "선별 테스트";
         }
     };
 
@@ -1568,7 +1637,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
                 return;
             }
 
-            runBtn.innerText = "▶ 자동 실행 시작";
+            runBtn.innerText = "▶ 답글 작성 테스트";
             if (result.status === "EMPTY") {
                 showSelectionSummary(category, result, false);
                 return;
@@ -1582,7 +1651,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
             };
             alert(messages[result.status] || "답글 작성창을 준비하지 못했습니다.");
         } catch (error) {
-            runBtn.innerText = "▶ 자동 실행 시작";
+            runBtn.innerText = "▶ 답글 작성 테스트";
             alert(`답글 작성 준비 중 오류가 발생했습니다: ${error.message}`);
         } finally {
             preparingReply = false;
