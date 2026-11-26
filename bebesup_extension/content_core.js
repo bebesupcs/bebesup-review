@@ -44,7 +44,7 @@
                 베베숲 AI
             </span>
             <span id="bebesup-patch-badge" style="font-size:10px; color:#666; background:#f1f5f9; padding:1px 6px; border-radius:10px; font-weight:normal;" title="GitHub 실시간 핫패치 연결됨">
-                v2.8.16 (리뷰 문맥에 따른 RED 오분류 수정)
+                v2.8.18 (혼합 리뷰 불만 유형 구분)
             </span>
             <button id="bebesup-update-check-btn" title="깃허브에서 최신 패치를 즉시 확인하고 동기화합니다." style="background:none; border:none; cursor:pointer; font-size:11px; padding:0 2px;" onclick="window.__BEBESUP_FORCE_UPDATE__ && window.__BEBESUP_FORCE_UPDATE__()">🔄</button>
         </div>
@@ -414,6 +414,22 @@
             .replace(/더러워지면\s*(?:그냥\s*)?버리(?:고|거나|면|는)/gu, " ");
     }
 
+    function getSpecificComplaint(text) {
+        if (/가격(?:이|은|도)?\s*(?:(?:좀|조금|너무|많이|살짝)\s*)?비(?:싸|싼|쌉)/u.test(text)) {
+            return { group: "정책/쿠폰/가격", issue: "가격 부담", detail: "고객이 가격 부담을 언급함", action: "가격에 대한 의견을 확인하고 공감 답글 검토" };
+        }
+        if (/(?:제조일(?:자)?|제조년월|생산일자|유통기한)[^!?。]{0,65}(?:흐리|흐려|흐릿|희미|잘\s*안\s*보|안\s*보이|읽기\s*어렵|번져)/u.test(text)) {
+            return { group: "날짜 표시 가독성", issue: "제조일자·유통기한 표시 가독성", detail: "고객이 날짜 표기가 흐리거나 읽기 어렵다고 함", action: "날짜 인쇄 상태를 확인하고 품질팀에 공유" };
+        }
+        if (/얇고\s*작|(?:예전|이전|기존)[^.!?。]{0,30}보다\s*(?:더\s*)?(?:얇|작)/u.test(text)) {
+            return { group: "원단/두께/사이즈", issue: "두께·크기 차이", detail: "고객이 이전 제품보다 얇거나 작다고 느꼈음", action: "비교 제품과 규격을 확인하고 공감 답글 검토" };
+        }
+        if (/먼지(?:가|는|도)?\s*(?:(?:너무|정말|많이)\s*)?(?:많|묻|나왔|붙)/u.test(text)) {
+            return { group: "위생/먼지/오염", issue: "먼지·오염 신고", detail: "고객이 제품에 먼지가 많거나 묻어 있었다고 함", action: "제품·포장 상태를 확인하고 개별 안내 검토" };
+        }
+        return null;
+    }
+
     function analyzeReviewData(rawReviews) {
         let redCount = 0;
         let yellowCount = 0;
@@ -429,6 +445,7 @@
             "원단/두께/사이즈": 0,
             "피부/성분 민감": 0,
             "정책/쿠폰/가격": 0,
+            "날짜 표시 가독성": 0,
             "기타 불만": 0
         };
 
@@ -460,7 +477,14 @@
                 // 2. YELLOW 검사 (속성 불만 / 품질 개선 VOC)
                 let isYellow = false;
 
-                if (["반품", "새거가 아닌", "새것이 아닌", "새상품이 아닌", "새제품이 아닌", "중고", "누가 쓰던", "쓰던", "개봉", "뜯어진", "포장지", "포장 불량", "포장 상태", "포장 엉망", "포장이 엉망", "변색", "지워지지", "주의부탁", "주의 부탁", "배송 오류", "배송오류", "오배송", "누락", "배송에 이런"].some(k => text.includes(k))) {
+                const specificComplaint = getSpecificComplaint(text);
+                if (specificComplaint) {
+                    issueCounts[specificComplaint.group]++;
+                    issueType = specificComplaint.issue;
+                    rootCause = specificComplaint.detail;
+                    action = specificComplaint.action;
+                    isYellow = true;
+                } else if (["반품", "새거가 아닌", "새것이 아닌", "새상품이 아닌", "새제품이 아닌", "중고", "누가 쓰던", "쓰던", "개봉", "뜯어진", "포장지", "포장 불량", "포장 상태", "포장 엉망", "포장이 엉망", "변색", "지워지지", "주의부탁", "주의 부탁", "배송 오류", "배송오류", "오배송", "누락", "배송에 이런"].some(k => text.includes(k))) {
                     issueCounts["배송/박스파손"]++;
                     issueType = "배송/포장/반품의심/변색";
                     rootCause = "반품/중고 의심 또는 외관 포장 오염/변색/배송 착오";
@@ -1398,7 +1422,7 @@ ${Object.entries(data.issueCounts).filter(([k,v]) => v > 0).map(([k,v]) => `• 
 
         const text = reviewText.replace(/\s+/g, " ");
         const issueText = getReviewIssueText(text);
-        if (badWords.some(word => issueText.includes(word))) return "complaint";
+        if (getSpecificComplaint(issueText) || badWords.some(word => issueText.includes(word))) return "complaint";
         if (/만족스럽지|만족하지\s*않|불만족|좋지는?\s*않|좋지\s*못|추천하지\s*않|추천\s*안|(?:마음|맘)에\s*(?:안\s*들|들지\s*않)|기대\s*(?:이하|만큼은?\s*아니)|(?:뽑기|꺼내기|쓰기|사용하기)(?:가|는)?\s*(?:힘들|어렵|불편)|(?:배송|택배|도착)[^.!?。]{0,35}(?:(?:며칠|몇\s*주|일주일|[3-9]\s*일)(?:이나|씩)?\s*기다|너무\s*오래\s*걸)/u.test(text)) {
             return "complaint";
         }
